@@ -260,7 +260,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1bc086f122fe84dadb79f1bbbc4bfe12, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  activePreset: {fileID: 11400000, guid: 62c864145033344e1bd8292be8cf354b, type: 2}
+  activePreset: {fileID: 11400000, guid: 216de9ac95aaf4ee89dabbf615a2a35d, type: 2}
   applyOnStart: 1
   testToneFrequency: 440
   testToneDuration: 1
@@ -440,7 +440,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 571ab9772484754459a267c6b3e548c5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  scriptFile: {fileID: 2811297602134710623, guid: 9aa28b5409b934384b9bafb006bb97bc, type: 3}
+  scriptFile: {fileID: 2811297602134710623, guid: d37c832bf47304dd797379efb57a42e2, type: 3}
   randomSeed: 2
   mixerGroups: []
   masterVolume: 1

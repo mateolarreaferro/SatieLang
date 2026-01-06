@@ -10,36 +10,35 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 9d985e1a2c7e449deb01484de1fea7fe, type: 3}
-  m_Name: Surround51
-  m_EditorClassIdentifier: 
-  presetName: 5.1 Surround
+  m_Name: Surround51_Custom2
+  m_EditorClassIdentifier:
+  presetName: 5.1 Custom 2
   speakerMode: 6
   channels:
   - role: 0
     hardwareOutput: 3
     enabled: 1
-    customLabel: 
+    customLabel: Left (Output 3)
   - role: 1
     hardwareOutput: 4
     enabled: 1
-    customLabel: 
+    customLabel: Right (Output 4)
   - role: 2
     hardwareOutput: 5
     enabled: 1
-    customLabel: 
+    customLabel: Center (Output 5)
   - role: 3
     hardwareOutput: 8
     enabled: 1
-    customLabel: 
+    customLabel: Sub (Output 8)
   - role: 4
     hardwareOutput: 6
     enabled: 1
-    customLabel: 
+    customLabel: Left Surr (Output 6)
   - role: 5
     hardwareOutput: 7
     enabled: 1
-    customLabel: 
-  routingNotes: 'Standard 5.1 surround mapping:
-
-    L=1, R=2, C=3, LFE=4, LS=5,
-    RS=6'
+    customLabel: Right Surr (Output 7)
+  routingNotes: "Custom 5.1 routing:\n- Left \u2192 Output 3\n- Right \u2192 Output
+    4\n- Center \u2192 Output 5\n- Subwoofer \u2192 Output 8\n- Left Surround \u2192
+    Output 6\n- Right Surround \u2192 Output 7"

@@ -1,0 +1,20 @@
+loop roomtone/beat
+    volume 0.3
+
+loop roomtone/radioplay
+    volume 0.1
+
+3 * oneshot ppiano/1 every 2to5
+    volume 0.2
+    move fly
+    visual trail
+    color yellow
+
+3 * oneshot roomtone/guitar every 3to6
+    volume 0.25
+    move walk
+
+loop ambience/rain
+    volume 0.15
+    visual sphere
+    color blue

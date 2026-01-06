@@ -1,0 +1,14 @@
+ 
+loop pad
+    volume 1
+    move x -10to10 y 0to15 z -10to10 speed 0.5to1
+    visual trail     
+loop whale
+    volume goto(0and0.5 in 2)
+    pitch gobetween 2to5
+    move x -10to10 y 0to15 z -10to10 speed 0.5to1
+    visual trail
+loop whalelead
+    volume 1
+    move x -10to10 y 0to15 z -10to10 speed 0.5to1
+    visual trail
