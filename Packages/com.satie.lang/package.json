@@ -1,0 +1,31 @@
+{
+    "name": "com.satie.lang",
+    "version": "1.0.0",
+    "displayName": "Satie Language",
+    "description": "A domain-specific language for spatial audio composition in Unity.",
+    "unity": "6000.1",
+    "keywords": [
+        "audio",
+        "spatial-audio",
+        "dsl",
+        "sound-design",
+        "composition"
+    ],
+    "samples": [
+        {
+            "displayName": "Tutorial",
+            "description": "Step-by-step tutorial scenes and scripts covering Satie fundamentals.",
+            "path": "Samples~/Tutorial"
+        },
+        {
+            "displayName": "Example Scripts",
+            "description": "Example .sat scripts demonstrating effects, compositions, and radio plays.",
+            "path": "Samples~/ExampleScripts"
+        },
+        {
+            "displayName": "Audio Library",
+            "description": "Built-in audio file library for use with Satie scripts. Required for Resources.Load paths.",
+            "path": "Samples~/AudioLibrary"
+        }
+    ]
+}

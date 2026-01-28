@@ -105,3 +105,28 @@ ProjectSettings/SceneTemplateSettings.json
 
 # Large audio files exceeding GitHub's 100MB limit
 Assets/Resources/Audio/ambience/hospital.wav
+
+# Environment files with secrets
+.env
+.env.*
+!.env.example
+
+# OpenCode auth (contains API keys)
+.opencode/auth.json
+
+# AI dev tooling
+.opencode/
+opencode.json
+AGENTS.md
+
+# IDE files
+.vscode/
+
+# Recordings (large binary files)
+Assets/Recordings/
+
+# Python
+__pycache__/
+
+# Node
+node_modules/

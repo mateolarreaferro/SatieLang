@@ -1,7 +1,0 @@
-loop ambience/forest
-    volume .1
-    filter mode lowpass cutoff gobetween(1000and5000 in 1)
-
-loop ambience/rain
-    volume .15
-    filter mode highpass cutoff 2000

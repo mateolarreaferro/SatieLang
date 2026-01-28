@@ -1,0 +1,16 @@
+{
+    "name": "Satie.Runtime",
+    "rootNamespace": "Satie",
+    "references": [
+        "SteamAudioUnity"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

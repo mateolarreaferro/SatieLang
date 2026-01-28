@@ -2,27 +2,47 @@
 
 SatieLang is a Domain Specific Language (DSL) for generative and event-based audio scripting in Unity. Define complex audio behaviors with simple, declarative syntax.
 
-## Setup
+## Installation
 
-### Unity Version
-You need **Unity 6000.1.1f1**. Download from:
-- **Unity Hub**: Search for 6000.1.1f1 in "Install Editor"
-- **Unity Download Archive**: [https://unity.com/releases/editor/archive](https://unity.com/releases/editor/archive)
+**Requires Unity 6000.1 or later.**
 
-### API Keys Configuration
+Install via the Unity Package Manager using a git URL:
 
-SatieLang uses API keys for AI-powered features. Setup is simple:
+```
+https://github.com/mateolarreaferro/SatieLang.git?path=Packages/com.satie.lang
+```
 
-1. Copy `Assets/APIKeys.cs.example` to `Assets/APIKeys.cs`
-2. Add your API keys:
+Or add directly to your project's `Packages/manifest.json`:
+
+```json
+{
+    "dependencies": {
+        "com.satie.lang": "https://github.com/mateolarreaferro/SatieLang.git?path=Packages/com.satie.lang"
+    }
+}
+```
+
+### What you get
+
+- **Runtime** — Satie DSL parser, scheduler, track manager, DSP effects (EQ, delay, distortion, reverb, filter), spatial audio with Steam Audio
+- **Editor tools** — Custom inspectors, `.sat` file importer, right-click "Create > Satie Script" menu
+- **Steam Audio** — Bundled inside the package, no separate install needed
+
+### After installing
+
+1. **Import the Audio Library** — Open **Window > Package Manager**, find **Satie Language**, expand **Samples**, and import **Audio Library**. This is required for `Resources.Load` audio paths in `.sat` scripts.
+2. **Set up API keys** (optional, for AI features) — Copy `APIKeys.cs.example` to `APIKeys.cs` in your Assets folder and fill in your keys:
 
 ```csharp
-public static class APIKeys
+namespace Satie
 {
-    public const string ANTHROPIC = "sk-ant-api03-...";   // Required for AI code generation
-    public const string OPENAI = "sk-proj-...";           // Required for speech input
-    public const string ELEVENLABS = "sk_...";            // Required for audio generation
-    public const string GOOGLE = "";                      // Optional
+    public static class APIKeys
+    {
+        public const string ANTHROPIC = "sk-ant-api03-...";   // AI code generation
+        public const string OPENAI = "sk-proj-...";           // Speech input
+        public const string ELEVENLABS = "sk_...";            // Audio generation
+        public const string GOOGLE = "";                      // Optional
+    }
 }
 ```
 
@@ -31,32 +51,24 @@ Get your keys from:
 - OpenAI: [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
 - ElevenLabs: [elevenlabs.io/api](https://elevenlabs.io/api)
 
-The `APIKeys.cs` file is gitignored so your keys stay private.
-
-**Alternative:** Set environment variables with the `SATIE_API_KEY_` prefix:
+Alternatively, set environment variables (these take priority over the file):
 ```bash
 export SATIE_API_KEY_ANTHROPIC="sk-ant-..."
 export SATIE_API_KEY_OPENAI="sk-proj-..."
 export SATIE_API_KEY_ELEVENLABS="sk_..."
 ```
 
-Environment variables take priority over the file.
+3. **Import samples** (optional) — In the Package Manager under **Satie Language > Samples**:
+   - **Tutorial** — 8 step-by-step lessons with scenes and scripts
+   - **Example Scripts** — Effects, compositions, and radio play demos
 
-### Quick Start
+### Quick start
 
-1. Open the project in Unity
-2. Navigate to `Assets > Tutorial` folder
-3. Open the **"Hello World"** scene
-4. Press Play
-
-### Creating Your First Script
-
-1. Right-click in the Project window
-2. Select **Create > Satie Script (.sat)**
-3. Rename and edit your script
-4. Create an empty GameObject in your scene
-5. Add the **SatieRuntime** component
-6. Assign your `.sat` script to the `Script File` field
+1. Right-click in the Project window and select **Create > Satie Script (.sat)**
+2. Create an empty GameObject in your scene
+3. Add the **SatieRuntime** component
+4. Assign your `.sat` script to the **Script File** field
+5. Press Play
 
 ## Basic Syntax
 
@@ -152,7 +164,14 @@ loop "music"  # Inline comment
 | Multiple | `3 * loop "rain"` |
 | Group | `group intro` |
 
-## Additional Resources
+## Tools
 
-For a complete tutorial, see [SatieLang Tutorial](https://github.com/mateolarreaferro/SatieLang/blob/main/Assets/Tutorial.md).
+Located in the package's `Tools~/` directory (ignored by Unity, usable outside the editor):
 
+- **VSCodeExtension/** — Syntax highlighting for `.sat` files
+
+## Development
+
+This repository is a full Unity project for developing the Satie Language package. The package source lives at `Packages/com.satie.lang/` and is automatically loaded as an embedded package when you open the project.
+
+Dev scenes are in `Assets/Scenes/` (Sandbox, Monks, Soundscape).
