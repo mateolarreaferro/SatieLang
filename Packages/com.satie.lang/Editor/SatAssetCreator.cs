@@ -10,9 +10,9 @@ static class SatAssetCreator
 {
     private const string kDefaultContent =
         @"# Satie Script - Hello World!
-loop ""hello"":
-    volume = 0.8
-    pitch = 0.8to1.2
+loop hello
+    volume 0.8
+    pitch 0.8to1.2
 ";
 
     [MenuItem("Assets/Create/Satie Script (.sat)", false, 82)]

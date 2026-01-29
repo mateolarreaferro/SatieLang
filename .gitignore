@@ -114,10 +114,8 @@ Assets/Resources/Audio/ambience/hospital.wav
 # OpenCode auth (contains API keys)
 .opencode/auth.json
 
-# AI dev tooling
+# OpenCode session data (not config)
 .opencode/
-opencode.json
-AGENTS.md
 
 # IDE files
 .vscode/

@@ -175,3 +175,25 @@ Located in the package's `Tools~/` directory (ignored by Unity, usable outside t
 This repository is a full Unity project for developing the Satie Language package. The package source lives at `Packages/com.satie.lang/` and is automatically loaded as an embedded package when you open the project.
 
 Dev scenes are in `Assets/Scenes/` (Sandbox, Monks, Soundscape).
+
+### AI-assisted development
+
+This project is configured for [OpenCode](https://opencode.ai), an AI coding assistant. To set it up:
+
+1. **Install OpenCode**
+   ```bash
+   curl -fsSL https://opencode.ai/install | bash
+   ```
+
+2. **Set your Anthropic API key**
+   ```bash
+   # Add to ~/.zshrc or ~/.bashrc
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   ```
+
+3. **Run from the project root**
+   ```bash
+   opencode
+   ```
+
+The project includes `opencode.json` (configuration) and `AGENTS.md` (codebase instructions) so the assistant understands the DSL syntax, architecture, and development patterns.

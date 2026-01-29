@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "model": "anthropic/claude-sonnet-4-5",
+  "watcher": {
+    "ignore": ["Library", "Temp", "Logs", "obj", "*.meta", "*.csproj"]
+  }
+}
