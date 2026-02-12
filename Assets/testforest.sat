@@ -4,22 +4,22 @@ loop ambience/forest
     filter mode lowpass cutoff 800
     move x -2.5to2.5 y 1.5 z -2.5to2.5 speed 1.5
 
-loop ppiano/15
+loop ppiano/15to18
     volume 0.2
     pitch 0.4
     move fly speed 7
         
-loop ppiano/28
+loop ppiano/28to36
     volume 0.15
     pitch 0.45
     move fly speed 7
 
-oneshot ppiano/8 every 8to12
+2 * oneshot ppiano/6to8 every 8to12
     volume 0.15to0.25
     pitch 0.8to1.0
     move fly speed 7
         
-oneshot ppiano/12 every 10to15
+oneshot ppiano/12to14 every 10to15
     volume 0.12to0.2
     pitch 0.85to1.05
     move fly speed 7
@@ -30,7 +30,7 @@ loop ambience/rain
     filter mode lowpass cutoff gobetween(18000and100 as inoutquad in 35)
     move x 5to-5 z -5to5 speed 2
 
-3 * oneshot elevenaimonster/thunder_3 every 55
+3 * oneshot elevenaimonster/thunder every 55
     volume gobetween(0and0.8 in 2)
     pitch 0.8
     start 25to30
@@ -52,7 +52,7 @@ oneshot animal/owl every 15to25
     filter mode lowpass cutoff 3000
     move fly speed 4
 
-oneshot elevenaimonster/wolf every 55
+oneshot elevenaimonster/wolf_org every 55
     volume 0.2
     pitch 0.2
     start 14to16
@@ -73,103 +73,82 @@ oneshot elevenaimonster/DSGNBass-heart_pumping every 60
     filter mode lowpass cutoff 3000
     move x -5to5 z -5to5 y -5to5 speed 0.5
 
-oneshot elevenaimonster/badger_3 every 20to30
+oneshot elevenaimonster/badger every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 3to10
     filter mode lowpass cutoff 3000
     move walk speed 2.5
 
-oneshot elevenaimonster/bat_1 every 15to25
+oneshot elevenaimonster/bat every 15to25
     volume 0.05to0.1
     pitch 0.8to1.2
     start 20to28
     filter mode lowpass cutoff 3000
     move fly speed 4.5
 
-oneshot elevenaimonster/bird_2 every 15to25
+3 * oneshot elevenaimonster/bird/2to4 every 15to25
     volume 0.05to0.1
     pitch 0.8to1.2
     start 35to42
     filter mode lowpass cutoff 3000
     move fly speed 2.8
 
-oneshot elevenaimonster/bird_3 every 15to25
-    volume 0.05to0.1
-    pitch 0.8to1.2
-    start 45to52
-    filter mode lowpass cutoff 3000
-    move fly speed 4
-
-oneshot elevenaimonster/bird_4 every 15to25
-    volume 0.05to0.1
-    pitch 0.8to1.2
-    start 36to39
-    filter mode lowpass cutoff 3000
-    move fly speed 3.5
-
-oneshot elevenaimonster/cricket_3 every 15to25
+oneshot elevenaimonster/cricket every 15to25
     volume 0.05to0.1
     pitch 0.8to1.2
     start 8to15
     filter mode lowpass cutoff 3000
     move walk speed 0.6
 
-oneshot elevenaimonster/fox_4 every 20to30
+oneshot elevenaimonster/fox every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 20to28
     filter mode lowpass cutoff 3000
     move walk speed 2.9
 
-oneshot elevenaimonster/deer_1 every 20to30
+oneshot elevenaimonster/deer every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 38to43
     filter mode lowpass cutoff 3000
     move walk speed 0.6
 
-3 * oneshot elevenaimonster/frog_2 every 15to25
+3 * oneshot elevenaimonster/frog every 15to25
     volume 0.05to0.1
     pitch 0.8to1.2
     start 15to18
     filter mode lowpass cutoff 3000
     move walk speed 1
 
-5 * oneshot elevenaimonster/raccoon_2 every 20to30
+5 * oneshot elevenaimonster/raccoon/1to2 every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 20to30
     filter mode lowpass cutoff 3000
     move walk speed 1.6
 
-oneshot elevenaimonster/raccoon_1 every 20to30
-    volume 0.05to0.1
-    pitch 0.8to1.2
-    start 28to36
-    filter mode lowpass cutoff 3000
-    move walk speed 1.9
-
-oneshot elevenaimonster/snake_1 every 15to25
+oneshot elevenaimonster/snake every 15to25
     volume 0.05to0.1
     pitch 0.8to1.2
     start 25to45
     filter mode lowpass cutoff 3000
     move walk speed 0.4
 
-loop elevenaimonster/string_bass_3 every 55
+loop elevenaimonster/string_bass every 55
     volume 0.05to0.25
     pitch 0.7to1.0
     filter mode lowpass cutoff 3000
 
-oneshot elevenaimonster/wild_boar_4 every 20to30
+oneshot elevenaimonster/wild_boar every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 26to29
     filter mode lowpass cutoff 3000
     move walk speed 0.9
 
-4 * oneshot elevenaimonster/wolf_4 every 20to30
+4 * oneshot elevenaimonster/wolf_spec every 20to30
     volume 0.05to0.1
     pitch 0.8to1.2
     start 27to30
@@ -189,15 +168,6 @@ oneshot synth_rec/upwhistle every 25to30
     filter mode lowpass cutoff 3000
     start 37to48
     move fly speed 1
-
-comment
-oneshot synth_rec/elecdown every 15to20
-    volume goto(0and0.2 as inquad in 1)
-    pitch 0.5to1.5
-    filter mode lowpass cutoff 3000
-    start 20to30
-    move fly speed 1
-endcomment
 
 oneshot synth_rec/vibloop every 20to30
     volume gobetween(0and0.15 as inquad in 1)
@@ -226,12 +196,3 @@ oneshot synth_rec/insectlike every 25to30
     filter mode lowpass cutoff 3000
     start 10to18
     move walk speed 1
-
-comment
-oneshot synth_rec/slidewithdrum every 40to50
-    volume goto(0and0.2 as inquad in 1)
-    pitch 0.1to0.2
-    filter mode lowpass cutoff 3000
-    start 40to55
-    move walk speed 2
-endcomment
