@@ -57,6 +57,9 @@ namespace Satie
         // Cache for generated audio
         private Dictionary<string, AudioGenerationResult> generationCache = new Dictionary<string, AudioGenerationResult>();
 
+        // Deduplication tracker for in-flight generations from gen keyword
+        private Dictionary<string, Task<bool>> inFlightGenerations = new Dictionary<string, Task<bool>>();
+
         void Awake()
         {
             if (instance != null && instance != this)
@@ -131,7 +134,7 @@ namespace Satie
             }
         }
 
-        private async Task<byte[]> CallElevenLabsAPI(string prompt)
+        private async Task<byte[]> CallElevenLabsAPI(string prompt, float? overrideDuration = null)
         {
             string apiKey = SatieAPIKeyManager.GetKey(SatieAPIKeyManager.Provider.ElevenLabs);
             if (string.IsNullOrEmpty(apiKey))
@@ -145,7 +148,7 @@ namespace Satie
                 var requestBody = new ElevenLabsRequest
                 {
                     text = prompt,
-                    duration_seconds = elevenLabsDuration,
+                    duration_seconds = overrideDuration ?? elevenLabsDuration,
                     prompt_influence = elevenLabsPromptInfluence
                 };
 
@@ -419,6 +422,104 @@ namespace Satie
                 sanitized = sanitized.Substring(0, 50);
 
             return sanitized.Replace(" ", "_").ToLower();
+        }
+
+        /// <summary>
+        /// Generate audio for a gen-keyword statement if the clip doesn't already exist on disk.
+        /// Deduplicates concurrent requests for the same target clip name.
+        /// </summary>
+        /// <param name="prompt">Text prompt sent to ElevenLabs API</param>
+        /// <param name="targetClipName">Unique file name for this variant (used for dedup and save path)</param>
+        /// <param name="isLoop">Whether this is a loop (affects default duration)</param>
+        public async Task<bool> GenerateIfNeeded(string prompt, string targetClipName, bool isLoop)
+        {
+            string resourcePath = $"Audio/generation/{targetClipName}";
+
+            // 1. Already on disk? Return immediately.
+            var existing = Resources.Load<AudioClip>(resourcePath);
+            if (existing != null)
+            {
+                Debug.Log($"[AudioGen] Clip already exists for '{prompt}' at Resources/{resourcePath}");
+                return true;
+            }
+
+            // 2. Already in-flight? Grab existing task (dedup). Otherwise start new one.
+            Task<bool> taskToAwait;
+            bool isOwner = false;
+
+            lock (inFlightGenerations)
+            {
+                if (inFlightGenerations.TryGetValue(targetClipName, out var inflight))
+                {
+                    Debug.Log($"[AudioGen] Awaiting in-flight generation for '{targetClipName}'");
+                    taskToAwait = inflight;
+                }
+                else
+                {
+                    // 3. Start new generation
+                    taskToAwait = GenerateAndSaveAsync(prompt, targetClipName, isLoop);
+                    inFlightGenerations[targetClipName] = taskToAwait;
+                    isOwner = true;
+                }
+            }
+
+            try
+            {
+                return await taskToAwait;
+            }
+            finally
+            {
+                if (isOwner)
+                {
+                    lock (inFlightGenerations)
+                    {
+                        inFlightGenerations.Remove(targetClipName);
+                    }
+                }
+            }
+        }
+
+        private async Task<bool> GenerateAndSaveAsync(string prompt, string sanitizedName, bool isLoop)
+        {
+            try
+            {
+                // Smart duration defaults
+                float duration = isLoop ? 10f : 5f;
+
+                Debug.Log($"[AudioGen] Generating '{prompt}' (duration={duration}s, loop={isLoop})");
+
+                byte[] audioData = await CallElevenLabsAPI(prompt, duration);
+                if (audioData == null || audioData.Length == 0)
+                {
+                    Debug.LogError($"[AudioGen] Generation failed for prompt: {prompt}");
+                    return false;
+                }
+
+                // ElevenLabs returns MP3 by default — convert to WAV for Unity
+                byte[] wavData = ConvertMp3BytesToWav(audioData) ?? audioData;
+
+                // Save to disk
+                string fileName = $"{sanitizedName}.wav";
+                string fullPath = Path.Combine(Application.dataPath, "Resources", "Audio", "generation", fileName);
+
+                string directory = Path.GetDirectoryName(fullPath);
+                if (!Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
+
+                await File.WriteAllBytesAsync(fullPath, wavData);
+                Debug.Log($"[AudioGen] Saved generated clip to: Assets/Resources/Audio/generation/{fileName}");
+
+                #if UNITY_EDITOR
+                UnityEditor.AssetDatabase.Refresh();
+                #endif
+
+                return true;
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[AudioGen] GenerateAndSaveAsync failed for '{prompt}': {e.Message}");
+                return false;
+            }
         }
 
         public void ClearCache()

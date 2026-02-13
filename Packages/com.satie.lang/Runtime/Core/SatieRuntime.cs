@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace Satie
@@ -34,6 +35,9 @@ public class SatieRuntime : MonoBehaviour
     [Header("Ambisonic Recording")]
     [Tooltip("Reference to AmbisonicRecorder component for scene recording (auto-detected if not set)")]
     [SerializeField] private AmbisonicRecorder ambisonicRecorder;
+
+    // Tracks gen prompts currently being generated to avoid duplicate API calls
+    private HashSet<string> pendingGenerations = new HashSet<string>();
 
     // Components
     private SatieSpatialAudio spatialAudio;
@@ -583,6 +587,19 @@ public class SatieRuntime : MonoBehaviour
     {
         Statement s = track.Statement;
 
+        // Gen-aware: if this is a generated clip, check if it exists yet
+        if (s.isGenerated)
+        {
+            string clipName = SatieUtil.ResolveClip(s.clip, random);
+            var existingClip = Resources.Load<AudioClip>(SatieParser.PathFor(clipName));
+            if (existingClip == null)
+            {
+                TriggerAsyncGeneration(track, anySoloActive);
+                return; // Don't schedule yet — will be scheduled after generation
+            }
+            // Clip exists — fall through to normal scheduling
+        }
+
         // Use 'start' if set, otherwise fall back to legacy 'starts_at'
         float startDelay = s.start.isSet ? random.Sample(s.start) : random.Sample(s.starts_at);
 
@@ -852,6 +869,95 @@ public class SatieRuntime : MonoBehaviour
             $"Stop: {trackKey}"
         );
         scheduler.Schedule(stopEvent);
+    }
+
+    /// <summary>
+    /// Fire off async audio generation for a gen statement.
+    /// Deduplicates by genPrompt so the same prompt doesn't trigger multiple API calls.
+    /// </summary>
+    async void TriggerAsyncGeneration(SatieTrack track, bool anySoloActive)
+    {
+        Statement s = track.Statement;
+        string prompt = s.genPrompt;
+        // Use clip name as dedup key — each variant has a unique clip (e.g., bird_chirping_1, bird_chirping_2)
+        string genKey = s.clip;
+
+        // If another track already triggered generation for this clip, poll for completion
+        if (pendingGenerations.Contains(genKey))
+        {
+            WaitForGenerationAndSchedule(track, anySoloActive);
+            return;
+        }
+
+        pendingGenerations.Add(genKey);
+        try
+        {
+            // Extract target clip name from the clip path (e.g., "generation/bird_chirping_1" → "bird_chirping_1")
+            string targetClipName = s.clip.Contains("/")
+                ? s.clip.Substring(s.clip.LastIndexOf('/') + 1)
+                : s.clip;
+
+            Debug.Log($"[SatieRuntime] Starting generation for '{prompt}' → {targetClipName}");
+            bool success = await SatieAudioGen.Instance.GenerateIfNeeded(prompt, targetClipName, s.kind == "loop");
+
+            if (!success)
+            {
+                Debug.LogError($"[SatieRuntime] Generation failed for '{prompt}' — track will remain silent.");
+                return;
+            }
+
+            // Verify track still exists (user may have re-synced while we were generating)
+            if (!trackManager.HasTrack(track.Key))
+            {
+                Debug.Log($"[SatieRuntime] Track '{track.Key}' no longer exists after generation — skipping playback.");
+                return;
+            }
+
+            Debug.Log($"[SatieRuntime] Generation complete for '{prompt}' → {targetClipName} — scheduling playback.");
+            ScheduleDSPPlayback(track, anySoloActive);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"[SatieRuntime] Generation error for '{prompt}': {e.Message}");
+        }
+        finally
+        {
+            pendingGenerations.Remove(genKey);
+        }
+    }
+
+    /// <summary>
+    /// When a second track has the same clip as an in-flight generation,
+    /// poll every 500ms until the first completes, then schedule playback. Max wait 60s.
+    /// </summary>
+    async void WaitForGenerationAndSchedule(SatieTrack track, bool anySoloActive)
+    {
+        string genKey = track.Statement.clip;
+        Debug.Log($"[SatieRuntime] Waiting for in-flight generation of '{genKey}' to complete...");
+
+        float waited = 0f;
+        const float pollInterval = 0.5f;
+        const float maxWait = 60f;
+
+        while (pendingGenerations.Contains(genKey) && waited < maxWait)
+        {
+            await Task.Delay((int)(pollInterval * 1000));
+            waited += pollInterval;
+        }
+
+        if (waited >= maxWait)
+        {
+            Debug.LogError($"[SatieRuntime] Timed out waiting for generation of '{genKey}'.");
+            return;
+        }
+
+        if (!trackManager.HasTrack(track.Key))
+        {
+            Debug.Log($"[SatieRuntime] Track '{track.Key}' no longer exists after waiting — skipping.");
+            return;
+        }
+
+        ScheduleDSPPlayback(track, anySoloActive);
     }
 
     // ===== Public API for Track Control =====

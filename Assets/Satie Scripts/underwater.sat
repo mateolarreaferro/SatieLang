@@ -1,0 +1,36 @@
+group underwater
+volume goto(0and1 as inquad in 5)
+    loop gen underwater calm ambience
+        volume 0.5
+        reverb wet 0.2
+
+    5 * oneshot gen bubbling note every 1to10
+        volume 0.1to0.3
+        pitch 0.7to2
+        move walk speed 2to3
+        visual sphere
+        color blue
+
+    5 * oneshot gen whale call every 10to15
+        volume 0.6to1
+        move x -10to10 y -10to10 z -5to5 speed 0.5to2
+        visual trail 
+        color blue
+
+    3 * oneshot gen dolphin click every 10to20
+        volume 0.2to0.3
+        pitch 0.8to1.5
+        move y 5to15 speed 1to3
+
+    oneshot gen deep ocean rumble every 15to25
+        volume 0.2
+
+    2 * oneshot gen water splash every 5to12
+        volume 0.01to0.1
+        pitch 0.8to1.2
+        move y 10to11 
+
+
+
+
+

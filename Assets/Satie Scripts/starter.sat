@@ -1,0 +1,22 @@
+
+
+
+
+
+
+comment 
+SATIE - Spatial Generative Audio Scripting Language
+endcomment
+
+10 * oneshot gen bird every 3to8
+    volume 0.4to0.7
+    move fly speed 5
+    visual trail
+    color red 0to255 green 0to255 blue 0to255
+
+
+
+
+
+
+

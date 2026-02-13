@@ -1,0 +1,32 @@
+group city_street
+volume goto(0and0.8 in 3)
+
+    loop gen busy urban traffic ambience
+        volume 0.4
+        filter mode lowpass cutoff 4000
+
+    3 * oneshot gen car horn honk every 8to20
+        volume 0.2to0.5
+        pitch 0.8to1.2
+        move x -20to20 speed 4to8
+
+    5 * oneshot gen footstep on concrete every 0.5to2
+        volume 0.05to0.15
+        pitch 0.9to1.1
+        move walk speed 1to2
+        visual sphere
+
+    2 * oneshot gen distant jackhammer every 12to25
+        volume 0.3to0.5
+        pitch 0.9to1
+        move x 15to20 z 10to15
+        filter mode lowpass cutoff 2000
+        reverb wet 0.3 size 0.4
+
+    oneshot gen police siren every 30to60
+        volume goto(0.1and0.8 in 3)
+        pitch gobetween(0.8and1.3 in 2)
+        move x -30to30 speed 6
+        visual trail
+        color red
+endgroup

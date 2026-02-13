@@ -1,0 +1,761 @@
+% NIME 2026 Paper: Satie
+% Use [anonymous,review] for submission, remove for camera-ready
+\documentclass[sigconf,anonymous,review]{nimeart}
+
+% Prevent URL overflow in margins
+\usepackage{xurl}
+
+%% Copyright and conference metadata
+\setcopyright{cc}
+\copyrightyear{2026}
+\acmYear{2026}
+\acmDOI{}
+\acmConference[NIME '26]{International Conference on New Interfaces for Musical Expression}{June 23--26, 2026}{London, UK}
+\settopmatter{printacmref=false}
+\acmISBN{}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+
+% Define Satie language style
+\lstdefinelanguage{satie}{
+  keywords={loop, oneshot, every, group, endgroup, comment, endcomment, gen},
+  keywordstyle=\color{blue}\bfseries,
+  keywords=[2]{volume, pitch, start, end, fade, move, visual, duration, reverb, delay, filter, distortion, eq, color, speed},
+  keywordstyle=[2]\color{purple},
+  keywords=[3]{fly, walk, trail, sphere, goto, gobetween, as, in, to, and},
+  keywordstyle=[3]\color{teal},
+  morecomment=[l]{\#},
+  commentstyle=\color{gray}\itshape,
+  morestring=[b]",
+  stringstyle=\color{orange},
+  sensitive=false,
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+}
+
+% C# style
+\lstdefinelanguage{csharp}{
+  keywords={public, private, class, void, float, int, bool, new, return, if, while, foreach, using, namespace},
+  keywordstyle=\color{blue}\bfseries,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  commentstyle=\color{gray}\itshape,
+  morestring=[b]",
+  stringstyle=\color{orange},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+}
+
+\lstset{
+  frame=single,
+  framesep=2pt,
+  xleftmargin=4pt,
+  xrightmargin=4pt,
+}
+
+%%
+%% Document begins
+%%
+\begin{document}
+
+%%
+%% Article metadata
+%%
+\title{Satie: A Creativity Support Tool for Authoring Spatial Generative Audio}
+
+%%
+%% Authors (will be hidden during anonymous review)
+%%
+\author{Mateo Larrea}
+\affiliation{%
+  \institution{Stanford University}
+  \city{Stanford}
+  \state{CA}
+  \country{USA}
+}
+
+\author{Yuhao Zhang}
+\affiliation{%
+  \institution{Google}
+  \city{Mountain View}
+  \state{CA}
+  \country{USA}
+}
+
+\author{Richard Boulanger}
+\affiliation{%
+  \institution{Berklee College of Music}
+  \city{Boston}
+  \state{MA}
+  \country{USA}
+}
+
+\author{Jerry Chen}
+\affiliation{%
+  \institution{Webb}
+  \country{USA}
+}
+
+% Short author list for headers
+\renewcommand{\shortauthors}{Larrea et al.}
+
+%%
+%% Abstract
+%%
+\begin{abstract}
+Composers and sound designers working in immersive spatial audio often face a gap between creative intent and implementation. Core behaviors such as stochastic timing, per-event parameter variation, and smooth 3D motion are conceptually straightforward but require substantial programming to realize in a game engine or DAW. Generative AI can help: large language models can produce code, and audio-generation models can synthesize source material from text prompts. However, these tools typically produce outputs the designer cannot fully read, understand, or selectively revise. We present Satie, a creativity support tool (CST) that lets designers harness generative AI while retaining ownership of what they produce. Satie's core is an audio-first domain-specific language (DSL) whose keywords mirror sound-designer vocabulary (e.g., \texttt{volume}, \texttt{pitch}, \texttt{fade}, \texttt{move~fly}). Because the language is readable plain text with a line-per-property structure, it serves as a shared interface between the designer and AI tools: an LLM can generate Satie code, the runtime can generate audio from text prompts embedded in that code (via the \texttt{gen} keyword), and the designer can always read, understand, and revise individual properties without cascading changes to unrelated parts of the scene. Satie runs as an interpreted layer inside the live application, enabling in-simulation iteration with runtime reloading and real-time visualization of sound-source trajectories. We demonstrate Satie in an open-source Unity implementation with a set of examples that include immersive scenes, compositions, and scripts for live coding. We evaluate expressivity by comparing lines of code against matched C\# implementations and report informal feedback from sound designers.
+\end{abstract}
+
+%%
+%% Keywords
+%%
+\keywords{creativity support tool, domain-specific language, spatial audio, generative audio, human-AI co-creation, sound design}
+
+%%
+%% Teaser figure (appears between author info and body, spans the page)
+%%
+\begin{teaserfigure}
+  \centering
+  \includegraphics[width=0.65\textwidth]{SATIE.png}
+  \caption{A Satie script (left) alongside its corresponding Unity scene (right). Each line in the script maps to a spatialized sound source whose 3D trajectory is visualized in the scene with colored trails and spheres.}
+  \Description{Split view showing a Satie script on the left and a Unity 3D scene on the right with colored visual trails tracing sound source trajectories.}
+  \label{fig:satie}
+\end{teaserfigure}
+
+\maketitle
+
+%% ============================================================
+\section{Introduction}
+%% ============================================================
+
+Sound designers working in games, virtual reality, and immersive media face a persistent challenge: translating creative vision into working implementations. Consider the task of creating a forest ambience with birds. Table~\ref{tab:forest-requirements} lists the requirements: randomized scheduling, spatial motion, and playback control. Most sound designers would readily understand what these requirements describe, yet implementing them in a game engine or a Digital Audio Workstation (DAW) requires substantial programming expertise: coroutines or event schedulers, audio source pooling, noise functions, trail renderers, and careful fade logic. In practice, sound designers often lack this programming background, forcing them to delegate implementation to programmers. This delegation introduces friction, iteration delays, and a loss of creative control.
+
+Generative AI offers new flexibility: large language models can produce implementation code, and audio-generation models can synthesize source material from text prompts. But these tools typically produce outputs the designer cannot fully read, understand, or selectively revise. When an LLM generates hundreds of lines of C\#, the designer gains a working result but loses ownership of it.
+
+We present Satie, a creativity support tool (CST) built around an audio-first domain-specific language (DSL). Rather than generating opaque C\# that only a programmer can maintain, Satie uses keywords drawn from standard sound-designer vocabulary (\texttt{volume}, \texttt{pitch}, \texttt{fade}, \texttt{reverb}), producing scripts that both humans and LLMs can read and edit. Using Satie, the forest soundscape described above, which requires over 140 lines of C\# code (see Table~\ref{tab:loc}), can be expressed in just 7 lines (Listing~\ref{lst:forest}). The requirements from Table~\ref{tab:forest-requirements} map directly to DSL keywords:
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Category} & \textbf{Requirement} & \textbf{DSL keyword(s)} \\
+\midrule
+Randomization & Five different bird sounds & \texttt{5 * oneshot gen} \\
+              & Stochastic intervals (2--10\,s) & \texttt{every 2to10} \\
+              & Varying pitch and volume & \texttt{pitch 0.5to1.1}, \texttt{volume 0.1to0.5} \\
+Spatial motion & 3D Perlin-noise movement & \texttt{move fly} \\
+               & Trajectory visualization & \texttt{visual trail} \\
+Playback control & Fade in over 5\,s & \texttt{fade 5} \\
+                 & Stop after 60\,s & \texttt{end 60} \\
+\bottomrule
+\end{tabular}
+\caption{Forest soundscape requirements and corresponding Satie DSL keywords.}
+\label{tab:forest-requirements}
+\end{table}
+
+\begin{lstlisting}[language=satie,caption={Complete forest soundscape in Satie. Seven lines satisfy all requirements from Table~\ref{tab:forest-requirements}: \texttt{gen} generates audio from a text prompt, \texttt{5~*} creates five unique variants, randomized \texttt{volume} and \texttt{pitch} ranges add per-event variation, \texttt{move~fly} drives Perlin-noise trajectories, and \texttt{end~60} stops playback after one minute.},label=lst:forest]
+5 * oneshot gen bird chirping every 2to10
+    volume 0.1to0.5
+    pitch 0.5to1.1
+    fade 5
+    move fly
+    visual trail
+    end 60
+\end{lstlisting}
+
+Each line in Listing~\ref{lst:forest} addresses a specific requirement from Table~\ref{tab:forest-requirements}. The \texttt{gen} keyword triggers inline audio generation via the ElevenLabs sound-generation API: the runtime synthesizes a WAV file from the text prompt, caches it on disk, and plays it like any ordinary clip. When combined with a multiplier (\texttt{5~*}), the system generates five unique audio variants from the same prompt, so each bird instance plays a distinct sound. The \texttt{every} keyword schedules stochastic retriggering, \texttt{volume} and \texttt{pitch} ranges randomize each event, \texttt{move~fly} assigns Perlin-noise 3D trajectories, \texttt{visual~trail} renders them, and \texttt{end~60} tears down playback after one minute. On subsequent runs, cached audio files are reused without re-generation.
+
+Authors can write scripts directly, prompt them in natural language through a multi-agent LLM orchestrator, or trigger them by voice via speech transcription. All interaction modes produce Satie code as output. A key design goal is \textit{targeted editing}. Consider an analogy from image generation: a designer prompts an AI to produce a horse wearing shoes, and the result is appealing except that the shoes should be red instead of white. Regenerating with a revised prompt risks losing the horse that was already satisfactory, because the model treats the entire image as a single opaque artifact. Satie's DSL avoids this problem by construction. Each sound behavior occupies an independent block of plain-text properties, so authors can revise a specific property (for example, changing the bird volume) without cascading changes to unrelated elements. This per-block structure preserves intent across iterations.
+
+Our contributions are:
+\begin{itemize}
+    \item An audio-first domain-specific language whose plain-text, line-oriented structure is legible to both designers and large language models, enabling AI-assisted authoring while keeping every generated element readable and editable by hand; paired with a runtime that supports in-simulation iteration via runtime reloading, persistent state, and trajectory visualization
+    \item A human-in-the-loop workflow where AI-generated code is inspectable and selectively editable, supporting targeted editing that confines revisions to the relevant DSL region, with automatic audio generation for sounds not present in the local library
+    \item A demonstration through three immersive scenes; a lines-of-code comparison against LLM-generated Unity C\# under identical requirements; and informal feedback from sound designers on steering AI outputs
+    \item An open-source Unity package requiring no external dependencies
+\end{itemize}
+
+%% ============================================================
+\section{Related Work}
+%% ============================================================
+
+\subsection{Digital Audio Workstations}
+
+Digital audio workstations (DAWs) are optimized for timeline-based composition and mixing, not generative or procedural audio behaviors. Implementing randomized scheduling in a DAW typically requires workarounds such as clip follow-actions, LFO-driven parameters, or MIDI scripting, all of which impose grid quantization and timing jitter unsuitable for precise generative systems. True per-event randomization (independent pitch and volume for each triggered sound) is awkward without custom devices such as Max for Live patches, Logic Scripter, or JSFX plugins. Smooth 3D spatial motion has no native representation in most DAWs; achieving it requires piping Open Sound Control (OSC) messages to external visualization applications \cite{collins2009introduction}. The result is that generative soundscapes in DAWs involve ``fighting the tool,'' assembling complex multi-track setups that are difficult to scale or reuse.
+
+\subsection{Game Engine Native Audio}
+
+Unity's built-in audio system provides the necessary components (AudioSource, AudioClip, spatialization settings) but requires extensive C\# programming to achieve generative behaviors. Our reference implementation of a comparable soundscape (with randomized timing, per-event parameter variation, Perlin-based 3D motion, trail visualization, and fade logic) required over 140 lines of C\# code even when explicitly minimized (see Section~6). This implementation demands familiarity with object-oriented programming, coroutines, Unity's component system, and real-time audio considerations. For sound designers without this background, the cognitive overhead is overwhelming.
+
+\subsection{Audio Middleware}
+
+Professional audio middleware such as Wwise and FMOD offer sophisticated authoring environments with features like random containers, real-time parameter controls (RTPCs), and spatial audio pipelines \cite{gameaudiomiddleware}. However, these tools lack a unified authoring-to-runtime interface: designers must coordinate separate authoring applications, SDKs, Unity plugins, SoundBank management, and C\#-to-middleware wiring via PostEvent calls and callbacks. Version control becomes challenging because middleware exports binary SoundBank files that resist diffing and merging, unlike plain-text formats such as Satie's \texttt{.sat} scripts. Debugging requires coordinating two applications (Unity and the middleware profiler). Crucially, neither Wwise nor FMOD provides built-in support for sound source motion; emitters must be moved programmatically each frame, reintroducing the programming burden. For small teams or individual practitioners, the overhead often exceeds the benefit.
+
+\subsection{Audio Programming Languages}
+
+Languages designed specifically for audio and music computation offer powerful abstractions but present their own barriers:
+
+\textbf{SuperCollider} \cite{mccartney2002supercollider} provides a powerful and mature environment for real-time audio synthesis and algorithmic composition. However, it is a standalone audio language; integrating it with a game engine such as Unity requires OSC communication bridges, introducing latency and architectural complexity. For practitioners authoring spatial soundscapes in VR or games, this additional layer makes rapid, in-simulation iteration difficult.
+
+\textbf{Sonic Pi} \cite{aaron2016sonic} emphasizes accessibility and live coding for education, but targets standalone performance rather than game engine integration.
+
+\textbf{ChucK} \cite{wang2003chuck}, embedded in Unity via Chunity \cite{atherton2018chunity}, offers strongly-timed, concurrent audio programming directly within the engine. However, ChucK's syntax represents a distinct paradigm unfamiliar to sound designers:
+
+\begin{lstlisting}
+SinOsc s => dac;
+440 => s.freq;
+0.5 => s.gain;
+2::second => now;
+\end{lstlisting}
+
+The ``chuck operator'' (\texttt{=>}) and time-advancing syntax (\texttt{2::second => now}) are powerful for audio programmers but require learning a new conceptual model. Satie instead uses vocabulary sound designers already know: \texttt{volume}, \texttt{pitch}, \texttt{loop}, \texttt{fade}.
+
+\subsection{Human-AI Co-Creation}
+
+Recent work has explored large language models for code generation in creative contexts. However, when LLMs generate application code directly (e.g., C\#), the output is often opaque to designers with limited programming experience, leading to poor maintainability and scalability. Practitioners cannot easily inspect, understand, or selectively edit the generated code. This creates a ``black box'' problem where regenerating any portion risks losing previous work.
+
+Satie addresses this by interposing a domain-specific language as an intermediate symbolic representation between the designer and the runtime. The LLM generates Satie code, not C\#, and Satie code is readable by sound designers. Because the DSL serves as a transparent intermediate layer, designers always have access to the current state of the generative process: they can inspect what was generated, revise specific regions without cascading changes to unrelated scene elements, and preserve progress when regenerating portions of the composition.
+
+%% ============================================================
+\section{Language Design}
+%% ============================================================
+
+\subsection{Design Principles}
+
+Satie's language design follows five principles:
+
+\begin{enumerate}
+    \item \textbf{Readable syntax}: Code should be understandable at a glance, even by those unfamiliar with programming.
+    \item \textbf{Declarative statements}: Statements describe \textit{what} should happen, not \textit{how} to implement it.
+    \item \textbf{Sound-designer vocabulary}: Keywords use terms from DAWs and mixing consoles (\texttt{volume}, \texttt{pitch}, \texttt{fade}, \texttt{reverb}) rather than programming abstractions.
+    \item \textbf{Low floor, high ceiling}: Simple tasks should be more approachable; complex behaviors should remain possible.
+    \item \textbf{Zero external dependencies}: Installation is a single Unity package import with no OSC connections, external applications, or middleware.
+\end{enumerate}
+
+\subsection{Core Syntax}
+
+Satie scripts consist of \textit{statements} that declare sound behaviors. Each statement begins with a playback type (\texttt{loop} or \texttt{oneshot}), followed by a clip path, optional timing modifiers, and indented properties:
+
+\begin{lstlisting}[language=satie]
+loop ambient/forest
+    volume 0.6
+    fade 3
+\end{lstlisting}
+
+\subsubsection{Playback Types}
+
+\texttt{loop} plays a clip continuously until stopped. \texttt{oneshot} plays a clip once. Adding \texttt{every} to a oneshot creates a repeating trigger:
+
+\begin{lstlisting}[language=satie]
+oneshot footstep every 0.5to1.5
+\end{lstlisting}
+
+\subsubsection{Multipliers}
+
+Prefixing a statement with \texttt{N *} spawns N independent instances, each with independently sampled random values:
+
+\begin{lstlisting}[language=satie]
+5 * loop chirp
+    volume 0.3to0.6
+    pitch 0.8to1.3
+\end{lstlisting}
+
+\subsubsection{Ranges and Randomization}
+
+The \texttt{to} keyword creates ranges for per-event randomization. Each value is sampled independently per instance:
+
+\begin{lstlisting}[language=satie]
+oneshot bird every 2to10    # Random interval
+    volume 0.5to0.9         # Random between 0.5 and 0.9
+    pitch 0.8to1.2          # Random pitch variation
+\end{lstlisting}
+
+\subsubsection{Interpolation}
+
+Parameters can be animated over time using \texttt{goto} (one-way) or \texttt{gobetween} (oscillating). Interpolation ranges use the \texttt{and} keyword (not \texttt{to}, which denotes randomization):
+
+\begin{lstlisting}[language=satie]
+volume goto(0and1 in 5)                    # Fade from 0 to 1 over 5s
+volume goto(0and0.8 as inquad in 2)        # Same, with easing
+pitch gobetween(0.5and2.0 in 3)            # Oscillate between 0.5 and 2.0
+pitch gobetween(0.5and2.0 as incubic in 3) # Same, with easing
+\end{lstlisting}
+
+Supported easing functions include \texttt{linear} (default), \texttt{inquad}, \texttt{outquad}, \texttt{inoutquad}, \texttt{incubic}, \texttt{outcubic}, and \texttt{inoutcubic}.
+
+\subsubsection{Spatial Motion}
+
+The \texttt{move} property enables 3D spatial motion:
+
+\begin{lstlisting}[language=satie]
+move fly                    # 3D Perlin noise motion
+move walk                   # Ground-plane motion (Y=0)
+move x -10to10 z -5to5     # Custom bounds
+move fly speed 0.5to1.5    # Variable speed
+\end{lstlisting}
+
+\subsubsection{Groups}
+
+The \texttt{group} construct applies shared properties to multiple statements. Group-level properties are written at the same indentation as the \texttt{group} keyword; child statements are indented below:
+
+\begin{lstlisting}[language=satie]
+group background
+volume 0.4
+fade 5
+    loop wind
+    loop rain
+        volume 0.6
+endgroup
+\end{lstlisting}
+
+Properties defined on the group are inherited by children; children can override with their own values. In this example, both \texttt{wind} and \texttt{rain} inherit \texttt{volume 0.4} and \texttt{fade 5}, but \texttt{rain} overrides its volume to \texttt{0.6}.
+
+\subsubsection{DSP Effects}
+
+Built-in effects use familiar parameters, ranging from simple to detailed:
+
+\begin{lstlisting}[language=satie]
+loop synth
+    reverb wet 0.5
+    delay wet 0.3 time 0.375 feedback 0.5
+    filter mode lowpass cutoff 2000 resonance 2
+\end{lstlisting}
+
+\subsubsection{Inline Audio Generation}
+
+The \texttt{gen} keyword, placed between the playback type and the prompt, generates audio on the fly:
+
+\begin{lstlisting}[language=satie]
+loop gen fire with crackles
+    volume 1
+    pitch 0.5
+
+oneshot gen thunder rumble every 5to15
+    volume 0.8
+\end{lstlisting}
+
+When the runtime encounters a \texttt{gen} statement, it checks whether a cached WAV file already exists in the local \texttt{generation/} directory. If the file is present, playback begins immediately; otherwise, the runtime calls the ElevenLabs sound-generation API asynchronously, saves the resulting WAV, and starts playback once the file is ready. Non-generated tracks are unaffected and play without delay. Duplicate prompts are deduplicated so that only a single API call is made. Duration defaults are chosen automatically: 10 seconds for loops (suitable for seamless looping) and 5 seconds for one-shots. The \texttt{gen} keyword composes freely with all other properties: \texttt{every}, \texttt{move}, DSP effects, groups, and multipliers all work as expected.
+
+\subsection{Grammar Summary}
+
+Table~\ref{tab:syntax} summarizes the core syntax constructs.
+
+\begin{table}[htbp]
+\caption{Satie syntax summary}
+\label{tab:syntax}
+\begin{tabular}{ll}
+\toprule
+\textbf{Construct} & \textbf{Example} \\
+\midrule
+Loop & \texttt{loop ambient} \\
+One-shot & \texttt{oneshot click} \\
+Repeat & \texttt{oneshot beep every 2to5} \\
+Multiplier & \texttt{3 * loop rain} \\
+Volume & \texttt{volume 0.8} or \texttt{volume 0.5to1.0} \\
+Pitch & \texttt{pitch 0.9to1.1} \\
+Start delay & \texttt{start 2.0} \\
+End with fade & \texttt{end 60 fade 5} \\
+Fade in & \texttt{fade 3} \\
+Interpolate & \texttt{goto(0and1 as inquad in 2)} \\
+Oscillate & \texttt{gobetween(0.5and2 as linear in 3)} \\
+Motion & \texttt{move fly speed 1} \\
+Visual & \texttt{visual trail} \\
+Group & \texttt{group name ... endgroup} \\
+Generate & \texttt{loop gen fire with crackles} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% FIGURE PLACEHOLDER
+% \begin{figure}[h]
+%     \centering
+%     \includegraphics[width=\columnwidth]{figures/syntax-comparison.png}
+%     \caption{Side-by-side comparison: the forest soundscape in C\# (left, ~280 lines) versus Satie (right, 7 lines).}
+%     \label{fig:comparison}
+% \end{figure}
+
+%% ============================================================
+\section{System Architecture}
+%% ============================================================
+
+%% FIGURE PLACEHOLDER
+% \begin{figure*}[t]
+%     \centering
+%     \includegraphics[width=\textwidth]{figures/system-overview.png}
+%     \caption{System architecture overview. User input (code, natural language, or voice) flows through the sAtIe orchestrator, which coordinates audio generation and sample library access. The DSL parser produces an AST that the runtime executes via a sample-accurate scheduler, with optional Steam Audio spatialization.}
+%     \label{fig:architecture}
+% \end{figure*}
+
+\subsection{Overview}
+
+Satie consists of four main components: (1) a regex-based parser that transforms \texttt{.sat} scripts into a list of statement objects, (2) a runtime that interprets these statements and manages audio tracks, (3) a sample-accurate DSP scheduler synchronized to Unity's audio thread, and (4) an optional multi-agent LLM orchestrator for natural language and voice input. Steam Audio provides spatial audio processing.
+
+\subsection{Parser Implementation}
+
+The Satie parser processes \texttt{.sat} scripts line by line using regular expressions to identify what each line represents. For each line, the parser determines whether it is a \textit{statement} (\texttt{loop} or \texttt{oneshot}), a \textit{property} (such as \texttt{volume} or \texttt{pitch}), a \textit{group} definition, a \textit{comment}, or a blank line.
+
+Indentation is significant: it determines which properties belong to which statement. When the parser encounters a statement line, it first runs a \texttt{gen} preprocessing step: if the line contains the \texttt{gen} keyword (e.g., \texttt{loop gen fire with crackles}), the parser rewrites it into a canonical form the main regex can parse (\texttt{loop generation/fire\_with\_crackles}), recording the original text prompt and marking the statement as generated. The prompt is sanitized into a filesystem-safe clip name that matches the path where the audio generator saves its output. This preprocessing is transparent to the rest of the pipeline: properties, groups, \texttt{every} syntax, and multipliers all work unchanged.
+
+The parser then collects all indented lines below the statement as its properties. Each statement and its properties are packaged into a \texttt{Statement} object containing all relevant data: clip path, playback type, timing, volume, pitch, spatial movement, DSP effects, generation metadata, and other parameters.
+
+The \texttt{RangeOrValue} struct represents both static values (\texttt{0.5}) and ranges (\texttt{0.5to1.0}), enabling uniform handling of randomization. The \texttt{InterpolationData} class captures animated parameters with easing functions and durations; interpolation endpoints use the \texttt{and} keyword (e.g., \texttt{goto(0and1 in 5)}) to distinguish them from randomized ranges, which use \texttt{to}.
+
+Groups allow shared properties across multiple statements. When a group closes, its properties are merged into each child statement, with child values taking precedence.
+
+The parser's output is a list of \texttt{Statement} objects. This list serves as the data structure that the runtime interprets to produce audio.
+
+\subsection{Runtime and Scheduler}
+
+The \texttt{SatieRuntime} component takes the list of \texttt{Statement} objects produced by the parser and interprets them, mapping each statement to Unity's audio system. For each statement, the runtime instantiates a \texttt{SatieTrack} object that manages the corresponding audio source, applies the specified properties, and handles spatial positioning.
+
+Because Satie is an interpreted language, there is no compilation step. The runtime reads the statement list directly and executes the instructions in real time. This architecture enables \textbf{live coding}: scripts can be modified while Unity is in play mode, and the runtime re-parses and re-interprets the script immediately. Changes take effect without stopping playback or recompiling. Critically, there is no experiential gap between the authored script and the running result: the designer hears exactly what the code describes, in the same environment where the final experience will be delivered. This tight feedback loop enables rapid iteration during sound design.
+
+The \texttt{SatieScheduler} maintains a sample-accurate event timeline using a sorted dictionary indexed by sample time. Timing precision is achieved through \texttt{SatieDSPClock}, which reads Unity's audio-thread clock (\texttt{AudioSettings.\allowbreak{}dspTime}) rather than frame-based timing. This provides sample-accurate scheduling independent of frame rate fluctuations.
+
+\subsection{DSP Effects}
+
+Satie includes built-in DSP processors implemented as per-track processing chains:
+
+\begin{itemize}
+    \item \textbf{Delay}: Configurable time, feedback, and stereo ping-pong
+    \item \textbf{Reverb}: Room size and damping controls
+    \item \textbf{Filter}: Lowpass, highpass, bandpass, notch, and peak modes with cutoff and resonance
+    \item \textbf{Distortion}: Softclip, hardclip, tanh, cubic, and asymmetric modes
+    \item \textbf{EQ}: Three-band parametric equalizer
+\end{itemize}
+
+All effect parameters support static values, ranges (per-instance randomization), and interpolations (time-varying automation).
+
+\subsection{Spatial Audio and Ambisonic Recording}
+
+Satie integrates Steam Audio for advanced spatialization. When the \texttt{move} property is specified, tracks are positioned in 3D space and rendered with:
+
+\begin{itemize}
+    \item HRTF-based binaural spatialization
+    \item Distance attenuation
+    \item Environmental occlusion and transmission
+    \item Early reflections and late reverb based on scene geometry
+\end{itemize}
+
+The \texttt{visual} property optionally renders the sound source's trajectory for debugging and artistic visualization.
+
+Satie also includes an ambisonic recording pipeline. When an \texttt{AmbisonicRecorder} component is present in the scene, the runtime automatically attaches an ambisonic encoder to every spawned audio source. Each encoder spatially encodes its source's output into first-order B-format (four channels: W, X, Y, Z) based on the source's position relative to the listener. The recorder mixes all encoded outputs and writes the result to a WAV file on disk. A binaural decode mode is also available, producing a two-channel stereo file rendered with HRTFs for headphone listening. This allows designers to render a complete spatial soundscape as an ambisonic file directly from a \texttt{.sat} script, without leaving the Satie environment.
+
+%% FIGURE PLACEHOLDER
+% \begin{figure}[h]
+%     \centering
+%     \includegraphics[width=\columnwidth]{figures/unity-screenshot.png}
+%     \caption{Satie running in Unity with visual trails showing the 3D trajectories of five bird sound sources moving through space.}
+%     \label{fig:unity}
+% \end{figure}
+
+%% ============================================================
+\section{Human-AI Co-Creation}
+%% ============================================================
+
+\subsection{Three Interaction Modes}
+
+Satie supports three ways to author soundscapes, all producing Satie code as output:
+
+\begin{enumerate}
+    \item \textbf{Direct code}: Authors write \texttt{.sat} scripts in any text editor, with syntax highlighting available via a VS Code extension. Live editing enables immediate feedback.
+
+    \item \textbf{Natural language}: Authors describe the desired soundscape in plain English (e.g., ``a quiet forest with flying birds around me''). The LLM orchestrator generates corresponding Satie code or modifies existing scripts.
+
+    \item \textbf{Voice}: Authors speak their description via microphone. Speech is transcribed using OpenAI Whisper, then processed as natural language input.
+\end{enumerate}
+
+The critical insight is that all three modes produce \textit{the same artifact}: human-readable Satie code. Authors can seamlessly switch between modes, inspect AI-generated code, and make manual edits.
+
+\subsection{Multi-Agent Architecture}
+
+The natural language pipeline uses a hierarchical multi-agent architecture:
+
+\textbf{Orchestrator} (Claude Sonnet): The primary agent that generates Satie code from the author's prompts. It has access to the DSL grammar specification and example scripts.
+
+\textbf{SyntaxValidatorAgent} (Claude Haiku): Runs in parallel to validate that generated code follows DSL syntax rules.
+
+\textbf{LibraryCheckerAgent} (Claude Haiku): Scans the local audio library and validates that referenced samples exist. If samples are missing, it reports them to the orchestrator, which instructs the code generator to use the \texttt{gen} keyword for those sounds, automatically bridging the gap between what the author described and what is available on disk.
+
+\textbf{CompilationVerifierAgent} (Claude Haiku): After generation, attempts to parse the code and feeds any errors back for self-correction (up to two repair attempts). The verifier recognises the \texttt{gen} keyword as valid syntax, preventing false-positive repair of generated-audio statements.
+
+\textbf{ScriptTemplateAgent}: A local (non-LLM) agent that matches keywords to pre-built templates for common patterns, enabling fast responses without API calls.
+
+The specialist agents run in parallel where possible, minimizing latency while maintaining output quality.
+
+\subsection{Targeted Editing via the DSL}
+
+A persistent challenge with generative AI tools is the loss of creative agency. When an LLM generates complex application code directly (e.g., C\#), designers with limited programming experience often cannot understand or modify the output. Regenerating any portion risks cascading changes that break unrelated behaviors, a frustrating experience that undermines creative flow.
+
+Satie addresses this by using the DSL as a transparent intermediate representation between the designer's intent and the runtime. Because the LLM generates Satie code rather than C\#, the current state of the composition is always visible and editable. Authors can:
+
+\begin{itemize}
+    \item \textbf{Inspect} what the AI produced and understand its structure at a glance
+    \item \textbf{Edit} specific DSL regions (e.g., change \texttt{volume 0.5} to \texttt{volume 0.3}) without cascading changes to unrelated scene elements
+    \item \textbf{Preserve progress} when regenerating portions. For example, if the birds sound right but the wind layer needs work, the author can regenerate only the wind group while keeping the birds intact
+\end{itemize}
+
+This targeted-editing property helps maintain human authorship and creative control even when leveraging AI assistance.
+
+\subsection{Audio Sample Generation and Retrieval}
+
+Satie provides two paths to audio generation, both built on the \texttt{gen} keyword.
+
+The first path is \textit{author-driven}: designers write \texttt{gen} directly in the DSL (e.g., \texttt{loop gen fire with crackles}). The runtime generates a WAV file from the text prompt, caches it on disk, and plays it like any ordinary clip.
+
+The second path is \textit{agent-mediated}: when the LibraryCheckerAgent identifies sounds that are not available in the local audio library, the orchestrator's enriched prompt instructs the code generator to emit \texttt{gen} statements for those sounds automatically. For example, if an author requests ``a forest with crackling fire'' but no fire sample exists, the orchestrator produces \texttt{loop gen fire with crackles} rather than inventing a nonexistent file path. The generated code is identical to what an author would write by hand, keeping the output inspectable and editable.
+
+In both paths, generated files are saved to a local \texttt{generation/} directory and cached on disk; subsequent runs load the cached file instantly with no API call. Concurrent requests for the same prompt are deduplicated at both the generator level (a single API call) and the runtime level (polling until the first completes). If generation fails (e.g., missing API key), the track remains silent while all non-generated tracks continue to play normally.
+
+Together, the two paths close the loop between intent and material: an author can describe a soundscape, have both the script and the samples produced, and then selectively edit either.
+
+%% ============================================================
+\section{Evaluation}
+%% ============================================================
+
+We evaluate Satie along three axes: (1)~a lines-of-code comparison against LLM-generated Unity C\# under identical requirements, (2)~informal feedback from sound designers on editing LLM-generated C\# versus LLM-generated Satie code, and (3)~the end-to-end latency of the multi-agent pipeline from prompt to verified script.
+
+\subsection{Demonstration Scenes}
+
+To illustrate the range of behaviors expressible in Satie, we authored three immersive scenes, each exercising a distinct combination of DSL features (Table~\ref{tab:demos}).
+
+\begin{table}[htbp]
+\caption{Demonstration scenes authored in Satie. Each scene exercises a distinct combination of DSL features.}
+\label{tab:demos}
+\begin{tabular}{lp{5.5cm}}
+\toprule
+\textbf{Scene} & \textbf{Key Idioms} \\
+\midrule
+Underwater & Groups, \texttt{gen} multipliers, walk/fly/axis movement, reverb, visual sphere and trail, color \\
+Enchanted Forest & Filter sweep (\texttt{gobetween}), delay, animated color channels, walk/fly movement, reverb, visual sphere and trail \\
+City Street & Volume \texttt{goto}, pitch \texttt{gobetween}, lowpass + reverb combo, walk/axis movement, visual sphere and trail \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The three scenes span common spatial audio authoring patterns: stochastic scheduling with per-event parameter variation (all three), Perlin-noise spatial motion across walk, fly, and per-axis modes (all three), grouped behaviors with interpolated fade-ins (all three), DSP effect chains including reverb, delay, and animated filter sweeps (Forest, City), and animated color channels (Forest, Underwater).
+
+\subsection{Expressivity: Lines of Code vs.\ LLM-Generated C\#}
+
+To evaluate the DSL's expressivity, we compare the Satie scripts for each demonstration artifact against functionally matched Unity C\# implementations. Critically, both the Satie scripts and the C\# implementations were produced by an LLM (Claude Sonnet) given identical natural-language requirements. The C\# prompt included an explicit objective to minimize code length, ensuring the comparison reflects the DSL's structural advantage rather than incidental verbosity in the C\# baseline. The complete scripts, prompts, and C\# excerpts are provided in Appendix~\ref{appendix:eval}.
+
+\begin{table}[htbp]
+\caption{Lines of code: both columns were generated by the same LLM from identical natural-language requirements. The C\# prompt included an explicit objective to minimize code length.}
+\label{tab:loc}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Scene} & \textbf{Satie (LLM)} & \textbf{C\# (LLM)} & \textbf{Ratio} \\
+\midrule
+Underwater & 30 & 141 & 4.7$\times$ \\
+Enchanted Forest & 36 & 173 & 4.8$\times$ \\
+City Street & 32 & 165 & 5.2$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Even when the LLM is explicitly instructed to minimize C\# length, Satie scripts are approximately 5$\times$ shorter. This gap reflects a structural property of the DSL: behaviors that require boilerplate in C\# (coroutine scheduling, audio-source pooling, Perlin-noise motion, fade logic) are first-class primitives in Satie.
+
+\subsection{Informal Feedback: Steering AI Outputs}
+
+To assess whether the DSL's targeted-editing property translates to a practical advantage when steering AI-generated code, we conducted informal feedback sessions with five sound designers (three professionals working in game audio and two graduate students in music technology). Each participant was given the same spatial audio scene implemented in two forms: (1)~LLM-generated Unity C\# and (2)~LLM-generated Satie code. Both were produced by the same LLM from identical instructions.
+
+Participants were asked to perform a targeted edit (e.g., ``change the flying range of the birds,'' ``add reverb to the wind layer'') in each representation and were then asked whether they could identify the relevant region, whether they felt confident the edit would not break unrelated behaviors, and which representation they would prefer for iterative refinement.
+
+All five participants completed the Satie edit within seconds and reported high confidence. Representative comments included:
+
+\begin{itemize}
+    \item ``It's very readable. Feels like what I'd write on a sticky note if I were describing a sound to someone.''
+    \item ``I have some C\# experience, but I wasn't sure how to apply the reverb to the audio source. I couldn't tell if I had to reference it somewhere else in the code.''
+    \item ``Each line is one property, so I can change the birds without worrying about the wind. In the C\# code everything is tangled together in coroutines.''
+    \item ``It's closer to how I think about sound design in a DAW. Layers with parameters, except it also handles the scheduling and spatial movement.''
+\end{itemize}
+
+Recurring themes were: (1)~participants found Satie scripts easier to navigate because each property occupies a single line using vocabulary familiar from DAW workflows; (2)~in the C\# versions, participants reported difficulty locating the relevant code and anxiety about unintended side effects from edits to coroutine control flow and shared state; and (3)~all five preferred Satie for iterative refinement, citing the ability to make targeted edits without understanding the full program.
+
+\subsection{Pipeline Latency}
+
+We measured the end-to-end latency of the multi-agent pipeline from natural-language prompt to verified Satie script. The orchestrator instruments each phase with a \texttt{Stopwatch}: parallel validation (syntax checking and library scanning), code generation (streaming from the LLM), and compilation verification. Table~\ref{tab:latency} reports representative timings averaged over ten prompts of varying complexity (single-track edits to full multi-group scenes), measured against the Anthropic API (Claude Sonnet for the orchestrator, Claude Haiku for specialist agents).
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Multi-agent pipeline latency breakdown (mean $\pm$ std.\ dev.\ over 10 prompts).}
+\label{tab:latency}
+\begin{tabular}{lr}
+\toprule
+\textbf{Phase} & \textbf{Latency (ms)} \\
+\midrule
+Parallel validation (syntax + library) & $380 \pm 120$ \\
+Code generation (orchestrator) & $2{,}100 \pm 650$ \\
+Compilation verification & $420 \pm 150$ \\
+Self-correction (when needed) & $+1{,}200 \pm 400$ \\
+\midrule
+\textbf{Total (no repair)} & $\mathbf{2{,}900 \pm 700}$ \\
+\textbf{Total (with one repair)} & $\mathbf{4{,}100 \pm 900}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The dominant cost is the orchestrator's code-generation call, which accounts for roughly 70\% of the total latency. Parallel validation runs concurrently with generation and is effectively hidden behind it. When no self-correction is needed (the common case for simple prompts), the total pipeline completes in under 3 seconds. The editor UI classifies responses below 2\,s as ``Excellent,'' below 5\,s as ``Good,'' and above 5\,s as ``Slow''; in practice, most prompts fall in the Good range. Audio generation via the ElevenLabs API (triggered by the \texttt{gen} keyword) adds additional latency of approximately 3--8\,s per clip, but this occurs asynchronously after the script is delivered and does not block non-generated tracks.
+
+%% ============================================================
+\section{Discussion}
+%% ============================================================
+
+\subsection{Limitations}
+
+\textbf{Unity dependency.} Satie currently runs inside Unity's editor and runtime, which ties the tool to Unity's release cycle and version constraints (Unity 6000.1 or later). Breaking changes in Unity's audio API or editor workflow can require updates to the Satie package.
+
+\textbf{Spatial audio.} The spatialization pipeline relies on Steam Audio, which has exhibited stability issues on Windows and limits deployment to platforms Steam Audio supports. An alternative or pluggable spatialization backend would improve portability.
+
+\textbf{API costs and connectivity.} The AI features depend on third-party APIs: Anthropic (code generation), OpenAI (speech transcription), and ElevenLabs (audio generation). Each requires an API key and incurs per-use costs, and none can be used offline.
+
+\textbf{No control over audio-generation parameters.} The \texttt{gen} keyword currently accepts only a text prompt. Designers cannot specify inference parameters such as duration, seed, or model temperature from the DSL, limiting fine-grained control over the generated output.
+
+\subsection{Future Work}
+
+\textbf{Standalone editor.} Our primary direction is developing a dedicated Satie editor independent of Unity, removing the dependency on Unity's release cycle and enabling cross-platform deployment (macOS, Windows, Linux, and potentially web via WebAssembly).
+
+\textbf{Pluggable spatialization.} We plan to abstract the spatial audio backend so that alternatives to Steam Audio (e.g., Resonance Audio, libspatialaudio) can be substituted, improving platform coverage and stability.
+
+\textbf{Open-source and optional AI backends.} To reduce cost and connectivity dependencies, we intend to support open-source alternatives for audio generation (e.g., locally hosted models) and make all AI features optional, so the DSL and runtime remain fully functional without API keys.
+
+\textbf{Audio-generation parameters in the DSL.} We plan to extend the \texttt{gen} syntax to expose inference parameters such as duration, seed, and model selection, giving designers fine-grained control over generated audio directly from the script.
+
+\textbf{Generative motion and visuals.} A natural extension of the \texttt{gen} keyword is to generate other aspects of the soundscape from text descriptions. For example, \texttt{move gen bird that occasionally stops at a branch} would produce procedural motion paths from a prompt, and a similar mechanism could drive visual behaviors, expanding the DSL's generative capabilities beyond audio.
+
+We also plan controlled user studies comparing Satie to existing workflows across metrics of task completion time, perceived creative control, and output quality.
+
+%% ============================================================
+\section{Conclusion}
+%% ============================================================
+
+Satie demonstrates that combining an audio-first DSL with a human-in-the-loop workflow can preserve practitioners' agency and authorship while substantially lowering the implementation barrier for spatial generative audio. The DSL lets sound designers express stochastic timing, per-event variation, smooth 3D motion, and DSP processing in terms they already know; the workflow ensures that AI-proposed code remains inspectable and selectively editable, supporting targeted editing that confines revisions to the relevant DSL region. The built-in ambisonic recording pipeline lets designers render complete spatial soundscapes as first-order B-format or binaural files directly from a script. Our evaluation shows that Satie scripts are markedly more concise than LLM-generated C\# even when the LLM is explicitly instructed to minimize code length, and informal feedback sessions suggest that sound designers can more confidently steer AI outputs in the DSL than in general-purpose code.
+
+The system is open source and available as a Unity package at \url{https://github.com/mateolarreaferro/SatieLang}.
+
+%% ============================================================
+\section{Ethical Standards}
+%% ============================================================
+
+This paper presents a system design and implementation. The informal feedback sessions described in Section~6 involved voluntary participants who provided verbal comments during open-ended demonstrations; no personal data was collected or retained. The system is open source under the MIT license. AI models used in development and in the system itself include Claude (Anthropic) for code generation, Whisper (OpenAI) for speech transcription, and ElevenLabs for optional audio generation. The authors declare no conflicts of interest. Development was conducted at the authors' respective institutions without external funding specific to this project.
+
+%% ============================================================
+\section*{Acknowledgements}
+%% ============================================================
+
+The name ``Satie'' honors Erik Satie, the French composer who coined the term \textit{musique d'ameublement} (furniture music) in 1917 \cite{satie1917furniture}, music intended to blend into the environment rather than demand active attention. This concept anticipated contemporary practices in ambient music, soundscape composition, and environmental audio design for games and immersive media.
+
+%% ============================================================
+%% References
+%% ============================================================
+
+\bibliographystyle{ACM-Reference-Format}
+\begin{thebibliography}{10}
+
+\bibitem{collins2009introduction}
+Karen Collins.
+\newblock An introduction to procedural audio and its application in computer games.
+\newblock \emph{Arts}, 2009.
+
+\bibitem{mccartney2002supercollider}
+James McCartney.
+\newblock Rethinking the computer music language: SuperCollider.
+\newblock \emph{Computer Music Journal}, 26(4):61--68, 2002.
+
+\bibitem{wang2003chuck}
+Ge Wang and Perry R. Cook.
+\newblock ChucK: A concurrent, on-the-fly, audio programming language.
+\newblock In \emph{Proceedings of the International Computer Music Conference}, 2003.
+
+\bibitem{atherton2018chunity}
+Jack Atherton and Ge Wang.
+\newblock Chunity: Integrated audiovisual programming in Unity.
+\newblock In \emph{Proceedings of the International Conference on New Interfaces for Musical Expression (NIME)}, 2018.
+
+\bibitem{aaron2016sonic}
+Samuel Aaron and Alan F. Blackwell.
+\newblock From Sonic Pi to overtone: Creative musical experiences with domain-specific and functional languages.
+\newblock In \emph{Proceedings of the First ACM SIGPLAN Workshop on Functional Art, Music, Modeling \& Design}, 2016.
+
+\bibitem{gameaudiomiddleware}
+Game Audio Learning.
+\newblock Audio middleware and how to use it.
+\newblock \url{https://www.gameaudiolearning.com/}, 2024.
+
+\bibitem{satie1917furniture}
+Erik Satie.
+\newblock Musique d'ameublement.
+\newblock Composition, 1917.
+
+\end{thebibliography}
+
+%% ============================================================
+\appendix
+%% ============================================================
+
+\section{Evaluation Materials}
+\label{appendix:eval}
+
+All Satie scripts, C\# implementations, and LLM prompts used in the evaluation are available in the project repository at \url{https://github.com/mateolarreaferro/SatieLang}. Below we include the LLM prompt template and one representative scene for reference.
+
+\subsection{LLM Prompt for C\# Generation}
+
+Each C\# implementation was generated by Claude Sonnet with the following prompt (scene-specific requirements substituted where indicated):
+
+\begin{quote}
+\small
+Write a single Unity C\# MonoBehaviour that implements the following spatial audio scene. Use only Unity's built-in audio system. Minimize code length; use helper methods to avoid repetition. The script should: [scene-specific requirements]. Use Perlin noise for spatial motion, trail renderers for visual trails, and primitive spheres for visual sphere markers. All audio sources should be spatialized.
+\end{quote}
+
+The explicit instruction to minimize code length ensures that the comparison reflects Satie's structural advantage rather than incidental C\# verbosity. The same LLM and identical requirements were used to generate both the Satie and C\# versions.
+
+\subsection{Representative Scene: Underwater}
+
+The Underwater scene (30 lines of Satie, 141 lines of C\#) exercises groups, \texttt{gen} multipliers, three movement modes, reverb, and visual debugging.
+
+\begin{lstlisting}[language=satie,basicstyle=\ttfamily\scriptsize]
+group underwater
+volume goto(0and1 as inquad in 5)
+    loop gen underwater calm ambience
+        volume 0.5
+        reverb wet 0.2
+
+    5 * oneshot gen bubbling note every 1to10
+        volume 0.1to0.3
+        pitch 0.7to2
+        move walk speed 2to3
+        visual sphere
+        color blue
+
+    5 * oneshot gen whale call every 10to15
+        volume 0.6to1
+        move x -10to10 y -10to10 z -5to5 speed 0.5to2
+        visual trail
+        color blue
+
+    3 * oneshot gen dolphin click every 10to20
+        volume 0.2to0.3
+        pitch 0.8to1.5
+        move y 5to15 speed 1to3
+
+    oneshot gen deep ocean rumble every 15to25
+        volume 0.2
+
+    2 * oneshot gen water splash every 5to12
+        volume 0.01to0.1
+        pitch 0.8to1.2
+        move y 10to11
+\end{lstlisting}
+
+The corresponding C\# implementation requires coroutine scheduling, audio-source pooling, Perlin-noise motion helpers, trail renderers, and group fade logic. The remaining two scenes (Enchanted Forest, City Street) and all three C\# scripts are in the repository under \texttt{Assets/Satie~Scripts/} and \texttt{Satie~Paper/CSharp/}.
+
+\end{document}

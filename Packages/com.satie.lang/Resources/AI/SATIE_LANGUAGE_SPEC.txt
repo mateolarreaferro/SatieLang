@@ -55,6 +55,18 @@ volume 0.5
     oneshot audio/file every 2
         pitch 0.8to1.2
 
+### Audio Generation (gen keyword)
+When a sound is NOT available in the audio library, use gen to generate it on the fly.
+The gen keyword goes between the playback type and the prompt text.
+The runtime generates a WAV via the ElevenLabs API, caches it on disk, and plays it.
+
+loop gen fire with crackles
+oneshot gen thunder rumble every 5to15
+3 * oneshot gen bird chirp every 2to10
+
+gen works with ALL other properties (volume, pitch, move, every, effects, groups, etc.)
+The prompt text after gen is used as the generation prompt - be descriptive!
+
 ### Flags (standalone, no value)
 randomstart
 overlap

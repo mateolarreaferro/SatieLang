@@ -1,0 +1,13 @@
+
+
+
+
+5 * oneshot bird/1to5 every 2to10
+    fade 5
+    volume .1to.5
+    pitch .5to1.1
+    move fly speed 1to2
+    visual trail
+    duration 60
+
+

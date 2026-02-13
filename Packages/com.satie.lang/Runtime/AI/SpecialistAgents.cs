@@ -28,6 +28,7 @@ Analyze the user's request and identify potential syntax requirements.
 
 VALID SYNTAX RULES (NO COLONS, NO QUOTES):
 - Statements: loop audio/file OR oneshot audio/file every 2to5
+- Generate: loop gen descriptive prompt OR oneshot gen descriptive prompt every 2to5
 - Properties: volume 0.5 OR pitch 0.8to1.2 (space-separated, NO equals)
 - Interpolation: volume goto(0and0.2 in 5) OR pitch gobetween(1and2 in 10)
 - Easing: gobetween(0and255 as incubic in 20) - supports: linear, inquad, incubic, inoutquad
@@ -153,7 +154,9 @@ Respond with ONLY a JSON object:
             }
 
             // If some samples are missing, ask LLM for suggestions
-            var systemPrompt = $@"You are an audio library assistant.
+            // Note: the orchestrator will instruct the code generator to use the gen keyword
+            // for any truly missing sounds, so alternatives here are best-effort fallbacks.
+            var systemPrompt = $@"You are an audio library assistant for Satie, a spatial audio DSL.
 
 Available audio samples:
 {string.Join("\n", _availableAudio.Take(200))}
@@ -162,10 +165,13 @@ User requested: {prompt}
 
 Missing sounds: {string.Join(", ", missing)}
 
-Suggest the best available alternatives. Respond with ONLY a JSON object:
+For each missing sound, suggest the closest available alternative if one exists.
+If no good alternative exists, set canGenerate to true — the gen keyword will be used to AI-generate the sound.
+
+Respond with ONLY a JSON object:
 {{
   ""suggestions"": [""path/to/sample1"", ""path/to/sample2""],
-  ""canGenerate"": true/false
+  ""canGenerate"": true
 }}";
 
             var request = new GenerateRequest
@@ -312,6 +318,7 @@ Fix the syntax errors in the provided Satie code. Output ONLY the corrected code
 CRITICAL SYNTAX RULES (NO COLONS, NO QUOTES, NO EQUALS):
 - Statements: loop audio/file (NOT loop ""audio/file"": or loop = ""audio/file"")
 - Statements: oneshot audio/file every 2to5 (NOT oneshot ""audio/file"": every 2to5)
+- Generate: loop gen descriptive prompt OR oneshot gen descriptive prompt every 2to5 (gen keyword is valid!)
 - Properties: volume 0.5 (NOT volume = 0.5 or volume: 0.5)
 - Properties: pitch 0.8to1.2 (space-separated, NO equals sign)
 - Interpolation: volume goto(0and0.2 in 5) OR pitch gobetween(1and2 in 10)

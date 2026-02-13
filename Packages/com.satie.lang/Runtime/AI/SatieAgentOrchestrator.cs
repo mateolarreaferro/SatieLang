@@ -27,6 +27,10 @@ namespace Satie.AI
             {
                 if (_instance == null)
                 {
+                    _instance = UnityEngine.Object.FindFirstObjectByType<SatieAgentOrchestrator>();
+                }
+                if (_instance == null)
+                {
                     var go = new GameObject("SatieAgentOrchestrator");
                     _instance = go.AddComponent<SatieAgentOrchestrator>();
                     DontDestroyOnLoad(go);
@@ -54,6 +58,18 @@ namespace Satie.AI
         // Event for streaming updates
         public event Action<string> OnStreamUpdate;
         public event Action<GenerationMetrics> OnGenerationComplete;
+
+        private void Awake()
+        {
+            if (_instance != null && _instance != this)
+            {
+                Destroy(this);
+                return;
+            }
+
+            _instance = this;
+            DontDestroyOnLoad(this.gameObject);
+        }
 
         private void Start()
         {
@@ -379,9 +395,21 @@ AUDIO EFFECTS:
            filter mode highpass cutoff goto(100and12000 in 5)
            filter mode lowpass cutoff 1000to5000
 
+AUDIO GENERATION (gen keyword):
+- When a sound is NOT available in the library, use the gen keyword to generate it
+- Syntax: loop gen <descriptive prompt> OR oneshot gen <descriptive prompt> every 2to5
+- Examples:
+  loop gen fire with crackles
+  oneshot gen thunder rumble every 5to15
+  3 * oneshot gen bird chirp every 2to10
+- The prompt text after gen should be descriptive (e.g. ""gentle rain on leaves"" not just ""rain"")
+- gen works with ALL properties: volume, pitch, move, every, effects, groups, multipliers
+- Generated audio is cached on disk - subsequent runs load instantly without re-generating
+- Use gen ONLY for sounds not available in the library - prefer existing samples when available
+
 {audioLibrary}
 
-IMPORTANT: ONLY use audio files from the above list. Do NOT make up file paths.
+IMPORTANT: Use audio files from the above list when available. For sounds NOT in the library, use the gen keyword to generate them. Do NOT make up file paths.
 
 Generate valid Satie code following these exact syntax rules.";
         }
@@ -400,6 +428,7 @@ Generate valid Satie code following these exact syntax rules.";
             // Add syntax requirements with examples
             promptBuilder.AppendLine("SYNTAX REFERENCE (use only if requested):");
             promptBuilder.AppendLine("- Basic: loop audio/file OR oneshot audio/file every 2to5");
+            promptBuilder.AppendLine("- Generate: loop gen descriptive prompt OR oneshot gen descriptive prompt every 2to5");
             promptBuilder.AppendLine("- Movement: move walk OR move fly OR move x -10to10 y 0to15 z -10to5 speed 2");
             promptBuilder.AppendLine("- Interpolation: volume goto(0and0.2 in 5) OR pitch gobetween(1and2 in 10)");
             promptBuilder.AppendLine("- Effects: delay/reverb/filter (only if user asks for effects)");
@@ -415,6 +444,18 @@ Generate valid Satie code following these exact syntax rules.";
                 {
                     promptBuilder.AppendLine($"  - {sample}");
                 }
+                promptBuilder.AppendLine();
+            }
+
+            // Instruct gen usage for missing samples
+            if (libraryResult.MissingSamples != null && libraryResult.MissingSamples.Length > 0)
+            {
+                promptBuilder.AppendLine("MISSING SAMPLES - USE gen KEYWORD TO GENERATE THESE:");
+                foreach (var missing in libraryResult.MissingSamples)
+                {
+                    promptBuilder.AppendLine($"  - {missing} → use gen (e.g. loop gen {missing} or oneshot gen {missing})");
+                }
+                promptBuilder.AppendLine("Write a descriptive prompt after gen for best results (e.g. 'gen gentle rain on leaves' not just 'gen rain').");
                 promptBuilder.AppendLine();
             }
 
@@ -476,10 +517,11 @@ Generate valid Satie code following these exact syntax rules.";
             }
             else if (libraryResult.MissingSamples?.Length > 0)
             {
-                explanation.AppendLine($"Note: Some samples were not found: {string.Join(", ", libraryResult.MissingSamples)}");
+                explanation.AppendLine($"Note: Some sounds were not found in your library: {string.Join(", ", libraryResult.MissingSamples)}");
+                explanation.AppendLine("The gen keyword was used to generate these sounds via the ElevenLabs API. Generated files are cached in Assets/Resources/Audio/generation/.");
                 if (libraryResult.SuggestedAlternatives?.Length > 0)
                 {
-                    explanation.AppendLine($"Used alternatives: {string.Join(", ", libraryResult.SuggestedAlternatives)}");
+                    explanation.AppendLine($"Library alternatives were also considered: {string.Join(", ", libraryResult.SuggestedAlternatives)}");
                 }
             }
 

@@ -1,0 +1,36 @@
+group enchanted_forest
+volume goto(0and1 in 5)
+
+    loop gen gentle wind through trees
+        volume 0.3
+        filter mode lowpass cutoff gobetween(800and3000 in 8)
+
+    5 * oneshot gen bird singing every 3to8
+        volume 0.1to0.4
+        pitch 0.8to1.3
+        move fly speed 1to2
+        visual trail
+        color green
+
+    3 * oneshot gen twig snap every 5to15
+        volume 0.05to0.15
+        pitch 0.9to1.2
+        move walk speed 0.5
+
+    4 * oneshot gen firefly buzz every 2to6
+        volume 0.02to0.08
+        pitch 1.5to2.5
+        move fly speed 0.5to1
+        visual sphere
+        color red 50 green gobetween(100and255 in 3) blue 0
+
+    oneshot gen owl hoot every 15to30
+        volume 0.3to0.5
+        pitch 0.8to1
+        reverb wet 0.7 size 0.9
+        move x -15to15 y 8to12 z -15to15
+
+    loop gen creek water flowing
+        volume 0.15
+        delay wet 0.3 time 0.2 feedback 0.4
+endgroup

@@ -23,6 +23,8 @@ namespace Satie
         public bool persistent = false;
         public bool mute = false;
         public bool solo = false;
+        public bool isGenerated = false;
+        public string genPrompt = null;
         public RangeOrValue fade_in = RangeOrValue.Null;
         public RangeOrValue fade_out = RangeOrValue.Null;
         public bool randomStart = false;  // Random playback position in clip
@@ -126,6 +128,11 @@ namespace Satie
     // parser
     public static class SatieParser
     {
+        // Regex to detect gen keyword in statement lines
+        static readonly Regex GenRx = new(
+            @"^(?<prefix>(?:\d+\s*\*\s*)?)(?<kind>loop|oneshot)\s+gen\s+(?<prompt>.+?)(?=\s+every\s+|\s*#|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         // Syntax: loop clip or oneshot clip every 1to5
         static readonly Regex StmtRx = new(
             @"^(?:(?<count>\d+)\s*\*\s*)?(?<kind>loop|oneshot)\s+(?<clip>[^\s#]+)\s*(?:every\s+(?:(?<e1>-?\d+\.?\d*)to(?<e2>-?\d+\.?\d*)|(?<e>-?\d+\.?\d*)))?\s*(?:#.*)?\r?\n" +
@@ -217,9 +224,12 @@ namespace Satie
                 // statement
                 if (StmtStartRx.IsMatch(body))
                 {
+                    // Preprocess gen keyword before the regex runs
+                    var (rewrittenBody, genPrompt, isGen) = PreprocessGen(body);
+
                     int stmtIndent = indent;
                     var sb = new StringBuilder();
-                    sb.AppendLine(body);
+                    sb.AppendLine(rewrittenBody);
 
                     int j = i + 1;
                     while (j < lines.Length && CountIndent(lines[j]) > stmtIndent)
@@ -230,6 +240,30 @@ namespace Satie
                     i = j - 1;
 
                     var st = ParseSingle(sb.ToString());
+                    if (isGen)
+                    {
+                        st.isGenerated = true;
+                        st.genPrompt = genPrompt;
+
+                        // Multiplier + gen: expand into N statements with unique clip variants
+                        // so each instance generates a different audio file
+                        if (st.count > 1)
+                        {
+                            int n = st.count;
+                            string baseClip = st.clip;
+                            string block = sb.ToString();
+                            for (int v = 0; v < n; v++)
+                            {
+                                var variant = ParseSingle(block);
+                                variant.count = 1;
+                                variant.clip = $"{baseClip}_{v + 1}";
+                                variant.isGenerated = true;
+                                variant.genPrompt = genPrompt;
+                                if (grp != null) grp.children.Add(variant); else outList.Add(variant);
+                            }
+                            continue;
+                        }
+                    }
                     if (grp != null) grp.children.Add(st); else outList.Add(st);
                     continue;
                 }
@@ -315,6 +349,44 @@ namespace Satie
             if (dot >= 0) c = c[..dot];
             if (!c.StartsWith("Audio/")) c = $"Audio/{c}";
             return c;
+        }
+
+        /// <summary>
+        /// Detect "gen" keyword and rewrite the line so the existing regex can parse it.
+        /// Returns (rewrittenLine, prompt, isGenerated).
+        /// </summary>
+        static (string line, string prompt, bool isGen) PreprocessGen(string line)
+        {
+            var m = GenRx.Match(line);
+            if (!m.Success)
+                return (line, null, false);
+
+            string prefix  = m.Groups["prefix"].Value;   // e.g. "3*"
+            string kind    = m.Groups["kind"].Value;      // loop or oneshot
+            string prompt  = m.Groups["prompt"].Value.Trim();
+            string clipName = "generation/" + SanitizeForClipName(prompt);
+
+            // Rebuild: preserve everything after the gen match (e.g. " every 2to5 # comment")
+            string remainder = line.Substring(m.Length);
+            string rewritten = $"{prefix}{kind} {clipName}{remainder}";
+
+            return (rewritten, prompt, true);
+        }
+
+        /// <summary>
+        /// Produce a clip name identical to what SatieAudioGen.SaveSelectedAudio writes to disk:
+        /// replace invalid filename chars with _, spaces with _, lowercase, truncate to 30 chars.
+        /// </summary>
+        public static string SanitizeForClipName(string prompt)
+        {
+            string invalid = new string(System.IO.Path.GetInvalidFileNameChars());
+            string sanitized = prompt;
+            foreach (char c in invalid)
+                sanitized = sanitized.Replace(c.ToString(), "_");
+            sanitized = sanitized.Replace(" ", "_").ToLower();
+            if (sanitized.Length > 30)
+                sanitized = sanitized.Substring(0, 30);
+            return sanitized;
         }
 
         // helpers
