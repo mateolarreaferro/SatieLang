@@ -124,8 +124,8 @@ Composers and sound designers working in immersive spatial audio often face a ga
 \begin{teaserfigure}
   \centering
   \includegraphics[width=0.65\textwidth]{SATIE.png}
-  \caption{A Satie script (left) alongside its corresponding Unity scene (right). Each line in the script maps to a spatialized sound source whose 3D trajectory is visualized in the scene with colored trails and spheres.}
-  \Description{Split view showing a Satie script on the left and a Unity 3D scene on the right with colored visual trails tracing sound source trajectories.}
+  \caption{A Satie script overlaid on its running Unity scene. The script generates ten spatialized bird sounds that fly through 3D space; their trajectories are rendered as colored trails behind each audio source.}
+  \Description{A Satie script overlaid on a Unity 3D scene showing speaker icons and colored trails tracing the flight paths of spatialized sound sources.}
   \label{fig:satie}
 \end{teaserfigure}
 
@@ -150,7 +150,7 @@ We present Satie, a creativity support tool (CST) built around an audio-first do
 \midrule
 Randomization & Five different bird sounds & \texttt{5 * oneshot gen} \\
               & Stochastic intervals (2--10\,s) & \texttt{every 2to10} \\
-              & Varying pitch and volume & \texttt{pitch 0.5to1.1}, \texttt{volume 0.1to0.5} \\
+              & Varying pitch and volume & \texttt{pitch}, \texttt{volume} with ranges \\
 Spatial motion & 3D Perlin-noise movement & \texttt{move fly} \\
                & Trajectory visualization & \texttt{visual trail} \\
 Playback control & Fade in over 5\,s & \texttt{fade 5} \\
