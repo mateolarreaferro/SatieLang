@@ -1,0 +1,11 @@
+loop ambience/forest
+    volume 0.3
+    filter mode allpass cutoff 1000 resonance 0.7 wet 0.6
+
+oneshot animals/birds every 3to6
+    volume 0.2
+    filter mode allpass cutoff 2000 resonance 0.5 wet 0.8
+
+oneshot bicycle/10 every 2to4
+    volume 0.25
+    filter mode allpass cutoff 1500 resonance 0.6 wet 0.7

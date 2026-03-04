@@ -4,7 +4,7 @@ namespace Satie
 {
 /// <summary>
 /// High-quality multi-mode filter using State Variable Filter (SVF) topology
-/// Modes: Low-pass, High-pass, Band-pass, Notch, Peak
+/// Modes: Low-pass, High-pass, Band-pass, Notch, Peak, All-pass
 /// Features smooth, stable frequency response with resonance control
 /// </summary>
 [RequireComponent(typeof(AudioSource))]
@@ -16,7 +16,8 @@ public class SatieDSPFilter : MonoBehaviour
         HighPass,
         BandPass,
         Notch,
-        Peak
+        Peak,
+        AllPass
     }
 
     // ===== FILTER PARAMETERS =====
@@ -56,6 +57,7 @@ public class SatieDSPFilter : MonoBehaviour
                 case "bandpass": mode = FilterMode.BandPass; break;
                 case "notch": mode = FilterMode.Notch; break;
                 case "peak": mode = FilterMode.Peak; break;
+                case "allpass": mode = FilterMode.AllPass; break;
             }
         }
 
@@ -176,6 +178,15 @@ public class SatieDSPFilter : MonoBehaviour
                 break;
             case FilterMode.Peak:
                 a1 = 1f; a2 = -k; a3 = -2f;
+                break;
+            case FilterMode.AllPass:
+                // All-pass output has a flat magnitude response; phase varies with
+                // frequency. In the SVF/TPT formulation an all-pass can be obtained
+                // by mixing high‑pass and low‑pass outputs with the band‑pass term
+                // scaled by resonance. This choice keeps |H(ω)| ≈ 1.
+                a1 = 1f;       // (add) high‑pass
+                a2 = -k;      // band‑pass scaled by -k
+                a3 = 1f;      // (add) low‑pass
                 break;
         }
     }

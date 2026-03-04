@@ -73,7 +73,7 @@ namespace Satie
         public InterpolationData delayPingPongInterpolation;
 
         // Filter
-        public string filterMode; // lowpass, highpass, bandpass, notch, peak
+        public string filterMode; // lowpass, highpass, bandpass, notch, peak, allpass
         public RangeOrValue filterCutoff = RangeOrValue.Null;
         public RangeOrValue filterResonance = RangeOrValue.Null;
         public RangeOrValue filterDryWet = RangeOrValue.Null;
@@ -1391,7 +1391,7 @@ namespace Satie
         {
             // Syntax: filter mode lowpass cutoff 1000 resonance 2 wet 1
 
-            var modeMatch = Regex.Match(v, @"\bmode\s+(lowpass|highpass|bandpass|notch|peak)", RegexOptions.IgnoreCase);
+            var modeMatch = Regex.Match(v, @"\bmode\s+(lowpass|highpass|bandpass|notch|peak|allpass)", RegexOptions.IgnoreCase);
             if (modeMatch.Success)
             {
                 s.filterMode = modeMatch.Groups[1].Value.ToLower();
