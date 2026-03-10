@@ -13,12 +13,15 @@ export function useSatieEngine() {
   const engineRef = useRef<SatieEngine | null>(null);
   const tracksRef = useRef<TrackState[]>([]);
 
+  const emptySet = useRef<ReadonlySet<number>>(new Set()).current;
   const [uiState, setUIState] = useState<EngineUIState>({
     isPlaying: false,
     currentTime: 0,
     trackCount: 0,
     statements: [],
     errors: null,
+    mutedIndices: emptySet,
+    soloedIndices: emptySet,
   });
 
   useEffect(() => {
@@ -68,6 +71,14 @@ export function useSatieEngine() {
     engineRef.current?.setMasterVolume(vol);
   }, []);
 
+  const toggleMute = useCallback((index: number) => {
+    engineRef.current?.toggleMute(index);
+  }, []);
+
+  const toggleSolo = useCallback((index: number) => {
+    engineRef.current?.toggleSolo(index);
+  }, []);
+
   return {
     engine: engineRef,
     uiState,
@@ -78,5 +89,7 @@ export function useSatieEngine() {
     loadAudioFile,
     loadAudioBuffer,
     setMasterVolume,
+    toggleMute,
+    toggleSolo,
   };
 }

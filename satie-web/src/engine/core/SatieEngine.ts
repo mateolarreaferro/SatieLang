@@ -279,24 +279,19 @@ export class SatieEngine {
   get mutedIndices(): ReadonlySet<number> { return this._mutedIndices; }
   get soloedIndices(): ReadonlySet<number> { return this._soloedIndices; }
 
+  /** Check if a track is audible given current mute/solo state. */
+  private isTrackAudible(track: TrackState): boolean {
+    const parts = track.key.split('_');
+    const stmtIndex = parseInt(parts[parts.length - 2], 10);
+    if (this._mutedIndices.has(stmtIndex)) return false;
+    if (this._soloedIndices.size > 0 && !this._soloedIndices.has(stmtIndex)) return false;
+    return true;
+  }
+
   /** Recalculate which tracks are audible based on mute/solo state. */
   private applyMixerState(): void {
-    const hasSolo = this._soloedIndices.size > 0;
-
     for (const track of this.tracks.values()) {
-      // Extract statement index from track key: "clip_INDEX_count"
-      const parts = track.key.split('_');
-      const stmtIndex = parseInt(parts[parts.length - 2], 10);
-
-      let audible = true;
-      if (this._mutedIndices.has(stmtIndex)) {
-        audible = false;
-      } else if (hasSolo && !this._soloedIndices.has(stmtIndex)) {
-        audible = false;
-      }
-
-      // Set gain to 0 if inaudible, restore original volume if audible
-      const targetGain = audible ? track.volume : 0;
+      const targetGain = this.isTrackAudible(track) ? track.volume : 0;
       track.gainNode.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.016);
     }
   }
@@ -457,6 +452,11 @@ export class SatieEngine {
 
     this.tracks.set(key, track);
     this._tracksArrayDirty = true;
+
+    // Apply mixer mute/solo state to new voice
+    if (!this.isTrackAudible(track)) {
+      track.gainNode.gain.value = 0;
+    }
 
     // Fire first audio trigger
     this.retriggerAudio(key, stmt);
@@ -671,9 +671,10 @@ export class SatieEngine {
       // Interpolated volume — use AudioParam automation
       if (stmt.volumeInterpolation) {
         const val = this.evalInterpCached(track, stmt.volumeInterpolation, elapsed);
-        // setTargetAtTime smooths value changes on the audio thread
-        track.gainNode.gain.setTargetAtTime(val, ctxTime, 0.016);
         track.volume = val;
+        // Respect mixer mute/solo state
+        const audibleVal = this.isTrackAudible(track) ? val : 0;
+        track.gainNode.gain.setTargetAtTime(audibleVal, ctxTime, 0.016);
       }
 
       // Interpolated pitch

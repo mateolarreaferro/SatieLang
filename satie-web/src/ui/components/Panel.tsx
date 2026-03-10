@@ -157,6 +157,7 @@ export function Panel({
         top: pos.y,
         width: size.w,
         height: size.h,
+        zIndex: 1,
         background: '#faf9f6',
         borderRadius: RADIUS,
         border: `1.5px solid ${borderColor}`,

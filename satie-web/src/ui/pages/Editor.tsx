@@ -19,8 +19,22 @@ import { WanderType } from '../../engine/core/Statement';
 const DEFAULT_SCRIPT = `# satie\n`;
 const AUTOSAVE_DELAY = 2000;
 
-/** Memoized voices panel — only re-renders when statements identity changes */
-const VoicesPanel = memo(function VoicesPanel({ statements }: { statements: Statement[] }) {
+/** Memoized voices panel with mixer controls (mute/solo per voice) */
+const VoicesPanel = memo(function VoicesPanel({
+  statements,
+  mutedIndices,
+  soloedIndices,
+  onToggleMute,
+  onToggleSolo,
+}: {
+  statements: Statement[];
+  mutedIndices: ReadonlySet<number>;
+  soloedIndices: ReadonlySet<number>;
+  onToggleMute: (index: number) => void;
+  onToggleSolo: (index: number) => void;
+}) {
+  const hasSolo = soloedIndices.size > 0;
+
   return (
     <div style={{
       padding: '4px 14px 8px',
@@ -33,24 +47,79 @@ const VoicesPanel = memo(function VoicesPanel({ statements }: { statements: Stat
       {statements.length === 0 && (
         <span style={{ opacity: 0.25 }}>no statements</span>
       )}
-      {statements.map((stmt, i) => (
-        <div key={i} style={{
-          padding: '1px 0',
-          opacity: stmt.mute ? 0.25 : 0.7,
-        }}>
-          <span style={{ fontWeight: 600 }}>{stmt.kind}</span>{' '}
-          <span>{stmt.clip.split('/').pop()}</span>
-          {!stmt.every.isNull && (
-            <span style={{ opacity: 0.4 }}> e:{stmt.every.toString()}</span>
-          )}
-          {stmt.reverbParams && <span style={{ color: '#8b0000' }}> rv</span>}
-          {stmt.delayParams && <span style={{ color: '#8b0000' }}> dl</span>}
-          {stmt.filterParams && <span style={{ color: '#8b0000' }}> fl</span>}
-          {stmt.wanderType !== WanderType.None && (
-            <span style={{ opacity: 0.4 }}> [{stmt.wanderType}]</span>
-          )}
-        </div>
-      ))}
+      {statements.map((stmt, i) => {
+        const isMuted = mutedIndices.has(i);
+        const isSoloed = soloedIndices.has(i);
+        const isAudible = !isMuted && (!hasSolo || isSoloed);
+
+        return (
+          <div key={i} style={{
+            padding: '1px 0',
+            opacity: stmt.mute ? 0.2 : isAudible ? 0.7 : 0.25,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}>
+            <button
+              onClick={() => onToggleMute(i)}
+              title="Mute"
+              style={{
+                background: isMuted ? '#1a3a2a' : 'none',
+                color: isMuted ? '#faf9f6' : '#1a3a2a',
+                border: '1px solid #1a3a2a',
+                borderRadius: 3,
+                fontSize: '8px',
+                fontWeight: 700,
+                fontFamily: "'SF Mono', monospace",
+                width: 16,
+                height: 14,
+                padding: 0,
+                cursor: 'pointer',
+                lineHeight: '14px',
+                opacity: isMuted ? 1 : 0.4,
+                flexShrink: 0,
+              }}
+            >
+              M
+            </button>
+            <button
+              onClick={() => onToggleSolo(i)}
+              title="Solo"
+              style={{
+                background: isSoloed ? '#8b6914' : 'none',
+                color: isSoloed ? '#faf9f6' : '#1a3a2a',
+                border: `1px solid ${isSoloed ? '#8b6914' : '#1a3a2a'}`,
+                borderRadius: 3,
+                fontSize: '8px',
+                fontWeight: 700,
+                fontFamily: "'SF Mono', monospace",
+                width: 16,
+                height: 14,
+                padding: 0,
+                cursor: 'pointer',
+                lineHeight: '14px',
+                opacity: isSoloed ? 1 : 0.4,
+                flexShrink: 0,
+              }}
+            >
+              S
+            </button>
+            <span style={{ fontWeight: 600 }}>{stmt.kind}</span>{' '}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {stmt.clip.split('/').pop()}
+            </span>
+            {!stmt.every.isNull && (
+              <span style={{ opacity: 0.4 }}> e:{stmt.every.toString()}</span>
+            )}
+            {stmt.reverbParams && <span style={{ color: '#8b0000' }}> rv</span>}
+            {stmt.delayParams && <span style={{ color: '#8b0000' }}> dl</span>}
+            {stmt.filterParams && <span style={{ color: '#8b0000' }}> fl</span>}
+            {stmt.wanderType !== WanderType.None && (
+              <span style={{ opacity: 0.4 }}> [{stmt.wanderType}]</span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 });
@@ -106,10 +175,10 @@ const PatchCord = memo(function PatchCord({ target }: { target: AITarget }) {
       <path
         d={path}
         fill="none"
-        stroke="#1a3a2a"
+        stroke="#000"
         strokeWidth={1.5}
         strokeDasharray="6 4"
-        opacity={0.35}
+        opacity={0.2}
       />
     </svg>
   );
@@ -127,6 +196,8 @@ export function Editor() {
     loadAudioBuffer,
     loadAudioFile,
     setMasterVolume,
+    toggleMute,
+    toggleSolo,
   } = useSatieEngine();
 
   const sfx = useSFX();
@@ -308,6 +379,9 @@ export function Editor() {
         position: 'relative',
         overflow: 'hidden',
       }}>
+        {/* Patch cord — rendered first so it sits behind all panels */}
+        {panels.ai && <PatchCord target={aiTarget} />}
+
         {panels.score && (
           <Panel
             panelId="score"
@@ -410,7 +484,13 @@ export function Editor() {
             minWidth={160}
             minHeight={72}
           >
-            <VoicesPanel statements={uiState.statements} />
+            <VoicesPanel
+              statements={uiState.statements}
+              mutedIndices={uiState.mutedIndices}
+              soloedIndices={uiState.soloedIndices}
+              onToggleMute={toggleMute}
+              onToggleSolo={toggleSolo}
+            />
           </Panel>
         )}
 
@@ -437,8 +517,6 @@ export function Editor() {
           </Panel>
         )}
 
-        {/* Patch cord SVG overlay */}
-        {panels.ai && <PatchCord target={aiTarget} />}
       </div>
     </div>
   );
