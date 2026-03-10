@@ -15,7 +15,7 @@ namespace Satie.AI
         string Name { get; }
 
         /// <summary>
-        /// Model identifier (e.g., "claude-sonnet-4-5-20250929", "gpt-5.1")
+        /// Model identifier (e.g., "claude-sonnet-4-6-20250514", "gpt-5.1")
         /// </summary>
         string Model { get; }
 
@@ -30,9 +30,10 @@ namespace Satie.AI
         IAsyncEnumerable<string> StreamAsync(GenerateRequest request);
 
         /// <summary>
-        /// Check if provider is properly configured and ready
+        /// Check if provider is properly configured and ready.
+        /// Returns (healthy, errorMessage).
         /// </summary>
-        Task<bool> IsHealthyAsync();
+        Task<(bool healthy, string error)> IsHealthyAsync();
     }
 
     /// <summary>

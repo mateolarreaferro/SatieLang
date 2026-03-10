@@ -25,7 +25,7 @@ namespace Satie.AI
         private const string BASE_URL = "https://api.anthropic.com/v1";
         private const string ANTHROPIC_VERSION = "2023-06-01";
 
-        public AnthropicProvider(string model = "claude-sonnet-4-5-20250929")
+        public AnthropicProvider(string model = "claude-sonnet-4-6-20250514")
         {
             Model = model;
             _apiKey = SatieAPIKeyManager.GetKey(SatieAPIKeyManager.Provider.Anthropic);
@@ -143,13 +143,13 @@ namespace Satie.AI
             }
         }
 
-        public async Task<bool> IsHealthyAsync()
+        public async Task<(bool healthy, string error)> IsHealthyAsync()
         {
             try
             {
                 if (string.IsNullOrEmpty(_apiKey))
                 {
-                    return false;
+                    return (false, "No API key configured");
                 }
 
                 // Simple health check - try a minimal request
@@ -162,11 +162,11 @@ namespace Satie.AI
                 };
 
                 var response = await GenerateAsync(testRequest);
-                return response.Success;
+                return (response.Success, response.Error);
             }
-            catch
+            catch (Exception e)
             {
-                return false;
+                return (false, e.Message);
             }
         }
 

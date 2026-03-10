@@ -40,7 +40,7 @@ namespace Satie.AI
         }
 
         [Header("Model Configuration")]
-        [SerializeField] private string orchestratorModel = "claude-sonnet-4-5-20250929";
+        [SerializeField] private string orchestratorModel = "claude-sonnet-4-6-20250514";
         [SerializeField] private string specialistModel = "claude-haiku-4-5-20251001";
 
         private ILLMProvider _orchestrator;
@@ -105,12 +105,14 @@ namespace Satie.AI
                 _scriptTemplateAgent = new ScriptTemplateAgent();
 
                 // Health check
-                bool orchestratorHealthy = await _orchestrator.IsHealthyAsync();
-                bool specialistHealthy = await _specialist.IsHealthyAsync();
+                var orchestratorHealth = await _orchestrator.IsHealthyAsync();
+                var specialistHealth = await _specialist.IsHealthyAsync();
 
-                if (!orchestratorHealthy || !specialistHealthy)
+                if (!orchestratorHealth.healthy || !specialistHealth.healthy)
                 {
-                    UnityEngine.Debug.LogError("[Orchestrator] Health check failed. Please configure Anthropic API key.");
+                    string orchErr = orchestratorHealth.error ?? "unknown";
+                    string specErr = specialistHealth.error ?? "unknown";
+                    UnityEngine.Debug.LogError($"[Orchestrator] Health check failed. Orchestrator ({orchestratorModel}): {orchErr} | Specialist ({specialistModel}): {specErr}");
                     _initializing = false;
                     return;
                 }
