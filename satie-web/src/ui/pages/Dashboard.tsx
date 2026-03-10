@@ -2,9 +2,15 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/AuthContext';
 import { getUserSketches, createSketch, deleteSketch, updateSketch } from '../../lib/sketches';
+import { loadSettings, saveKey as saveSettingsKey } from '../../lib/userSettings';
 import type { Sketch } from '../../lib/supabase';
 import { SplashScreen } from '../components/SplashScreen';
 import { useSFX } from '../hooks/useSFX';
+
+interface ApiKeys {
+  anthropic_key: string;
+  elevenlabs_key: string;
+}
 
 // Draggable sketch card
 function SketchCard({
@@ -64,7 +70,6 @@ function SketchCard({
   };
 
   const handleClick = (e: React.MouseEvent) => {
-    // Don't open if we dragged, or if clicking a button/input
     const tag = (e.target as HTMLElement).tagName;
     if (hasMoved.current || tag === 'BUTTON' || tag === 'INPUT') return;
     sfx.open();
@@ -201,14 +206,13 @@ function SketchCard({
   );
 }
 
-// Position sketches in a scattered layout
+// Position sketches in a clean grid
 function layoutPosition(index: number, total: number) {
   const cols = Math.ceil(Math.sqrt(total));
   const col = index % cols;
   const row = Math.floor(index / cols);
-  // Stagger with some organic offset
   const baseX = 80 + col * 320;
-  const baseY = 120 + row * 220;
+  const baseY = 40 + row * 220;
   const jitterX = ((index * 37) % 40) - 20;
   const jitterY = ((index * 53) % 30) - 15;
   return { x: baseX + jitterX, y: baseY + jitterY };
@@ -221,15 +225,26 @@ export function Dashboard() {
   const [sketches, setSketches] = useState<Sketch[]>([]);
   const [loadingSketches, setLoadingSketches] = useState(false);
   const [showSplash, setShowSplash] = useState(() => {
-    // Only show splash once per session
     if (sessionStorage.getItem('satie-splash-seen')) return false;
     return true;
   });
+  const [showSettings, setShowSettings] = useState(false);
+  const [keys, setKeys] = useState<ApiKeys>({ anthropic_key: '', elevenlabs_key: '' });
 
   const handleSplashComplete = useCallback(() => {
     setShowSplash(false);
     sessionStorage.setItem('satie-splash-seen', '1');
   }, []);
+
+  // Load API keys
+  useEffect(() => {
+    loadSettings(user?.id ?? null).then(setKeys).catch(console.error);
+  }, [user?.id]);
+
+  const handleSaveKey = useCallback((field: keyof ApiKeys, value: string) => {
+    setKeys(prev => ({ ...prev, [field]: value }));
+    saveSettingsKey(user?.id ?? null, field, value);
+  }, [user?.id]);
 
   const fetchSketches = useCallback(async () => {
     if (!user) return;
@@ -287,6 +302,8 @@ export function Dashboard() {
     );
   }
 
+  const userName = user?.user_metadata?.user_name || user?.email?.split('@')[0] || '';
+
   return (
     <>
       {showSplash && <SplashScreen onComplete={handleSplashComplete} />}
@@ -295,16 +312,35 @@ export function Dashboard() {
         {/* Header */}
         <header style={styles.header}>
           <div style={styles.logo}>satie</div>
-          <div style={styles.headerCenter}>
-            <button className="new-btn" onClick={() => { sfx.click(); handleNew(); }} onMouseEnter={sfx.hover} style={styles.newBtn}>
-              + New Sketch
-            </button>
-          </div>
+
           <div style={styles.headerRight}>
             {user ? (
               <>
-                <span style={styles.email}>{user.email ?? user.user_metadata?.user_name}</span>
-                <button className="link-btn" onClick={() => { sfx.close(); signOut(); }} style={styles.linkBtn}>sign out</button>
+                {/* Settings button */}
+                <button
+                  onClick={() => { sfx.toggle(); setShowSettings(!showSettings); }}
+                  title="Settings"
+                  style={{
+                    ...styles.iconBtn,
+                    opacity: showSettings ? 0.8 : 0.35,
+                  }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="#0a0a0a" strokeWidth="1.3">
+                    <circle cx="5.5" cy="5.5" r="3"/>
+                    <line x1="8" y1="8" x2="14" y2="14" strokeLinecap="round"/>
+                    <line x1="11" y1="11.5" x2="13" y2="11.5" strokeLinecap="round"/>
+                    <line x1="12" y1="10" x2="14" y2="10" strokeLinecap="round"/>
+                  </svg>
+                </button>
+
+                {/* User initial */}
+                <div style={styles.avatar} title={user.email ?? userName}>
+                  {(userName[0] ?? '?').toUpperCase()}
+                </div>
+
+                <button className="link-btn" onClick={() => { sfx.close(); signOut(); }} style={styles.linkBtn}>
+                  sign out
+                </button>
               </>
             ) : (
               <>
@@ -319,8 +355,51 @@ export function Dashboard() {
           </div>
         </header>
 
+        {/* Settings panel (slides down) */}
+        {showSettings && (
+          <div style={styles.settingsPanel}>
+            <div style={styles.settingsInner}>
+              <div style={styles.settingsSection}>
+                <div style={styles.settingsLabel}>Anthropic API Key</div>
+                <input
+                  type="password"
+                  placeholder="sk-ant-..."
+                  value={keys.anthropic_key}
+                  onChange={(e) => handleSaveKey('anthropic_key', e.target.value)}
+                  style={styles.settingsInput}
+                />
+              </div>
+              <div style={styles.settingsSection}>
+                <div style={styles.settingsLabel}>ElevenLabs API Key</div>
+                <input
+                  type="password"
+                  placeholder="sk_..."
+                  value={keys.elevenlabs_key}
+                  onChange={(e) => handleSaveKey('elevenlabs_key', e.target.value)}
+                  style={styles.settingsInput}
+                />
+              </div>
+              <div style={{ fontSize: '10px', opacity: 0.25, marginTop: '4px' }}>
+                {user ? 'synced to account' : 'stored locally'}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Canvas area — sketches float freely */}
         <div style={styles.canvas}>
+          {/* New sketch button — top left of canvas */}
+          {user && (
+            <button
+              className="new-btn"
+              onClick={() => { sfx.click(); handleNew(); }}
+              onMouseEnter={sfx.hover}
+              style={styles.newBtn}
+            >
+              + New Sketch
+            </button>
+          )}
+
           {!user && (
             <div style={styles.welcome}>
               <div style={styles.welcomeTitle}>Welcome to Satie</div>
@@ -381,35 +460,48 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '16px 32px',
-    borderBottom: '1.5px solid #0a0a0a',
+    borderBottom: '1px solid #d0cdc4',
     flexShrink: 0,
   },
   logo: {
-    fontSize: '18px',
+    fontSize: '16px',
     fontWeight: 700,
-    letterSpacing: '0.02em',
-  },
-  headerCenter: {
-    display: 'flex',
-    alignItems: 'center',
+    letterSpacing: '0.04em',
   },
   headerRight: {
     display: 'flex',
     alignItems: 'center',
-    gap: '12px',
+    gap: '14px',
   },
-  email: {
-    fontSize: '12px',
-    opacity: 0.5,
+  avatar: {
+    width: 26,
+    height: 26,
+    background: '#0a0a0a',
+    borderRadius: 13,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '11px',
+    color: '#faf9f6',
+    fontWeight: 600,
+  },
+  iconBtn: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: 4,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'opacity 0.15s',
   },
   linkBtn: {
     background: 'none',
     border: 'none',
     cursor: 'pointer',
-    fontSize: '12px',
+    fontSize: '11px',
     color: '#0a0a0a',
-    opacity: 0.5,
-    textDecoration: 'underline',
+    opacity: 0.3,
     fontFamily: "'Inter', system-ui, sans-serif",
   },
   authBtn: {
@@ -423,8 +515,45 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#0a0a0a',
     fontWeight: 500,
   },
+  settingsPanel: {
+    borderBottom: '1px solid #d0cdc4',
+    background: '#f4f3ee',
+    flexShrink: 0,
+  },
+  settingsInner: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '24px',
+    padding: '14px 32px',
+  },
+  settingsSection: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  settingsLabel: {
+    fontSize: '10px',
+    opacity: 0.4,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    whiteSpace: 'nowrap' as const,
+  },
+  settingsInput: {
+    width: 180,
+    padding: '5px 10px',
+    border: '1px solid #d0cdc4',
+    borderRadius: 6,
+    fontSize: '11px',
+    fontFamily: "'SF Mono', monospace",
+    background: 'transparent',
+    outline: 'none',
+    color: '#0a0a0a',
+  },
   newBtn: {
-    padding: '6px 16px',
+    position: 'absolute' as const,
+    top: 28,
+    left: 32,
+    padding: '7px 18px',
     background: '#0a0a0a',
     border: 'none',
     borderRadius: 8,
@@ -433,6 +562,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: "'Inter', system-ui, sans-serif",
     color: '#faf9f6',
     fontWeight: 500,
+    zIndex: 10,
   },
   canvas: {
     flex: 1,

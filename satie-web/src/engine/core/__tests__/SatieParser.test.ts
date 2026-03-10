@@ -258,8 +258,11 @@ describe('SatieParser', () => {
     it('color channel interpolation: red gobetween', () => {
       const s = parseOne('loop rain\n  color red gobetween(0and255 in 5) green 128 blue 0');
       expect(s.colorRedInterpolation).not.toBeNull();
-      expect(s.colorGreenInterpolation).not.toBeNull();
-      expect(s.colorBlueInterpolation).not.toBeNull();
+      // Static values (green 128, blue 0) go to colorRange, not interpolation
+      expect(s.colorGreenRange).not.toBeNull();
+      expect(s.colorGreenRange!.min).toBeCloseTo(128 / 255);
+      expect(s.colorBlueRange).not.toBeNull();
+      expect(s.colorBlueRange!.min).toBeCloseTo(0);
     });
   });
 

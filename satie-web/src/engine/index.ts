@@ -1,5 +1,5 @@
 export { SatieEngine } from './core/SatieEngine';
-export type { EngineState, TrackState } from './core/SatieEngine';
+export type { EngineState, EngineUIState, TrackState } from './core/SatieEngine';
 export { parse, tryParse, pathFor, sanitizeForClipName, SatieSyntaxError } from './core/SatieParser';
 export { Statement, WanderType } from './core/Statement';
 export type { Vec3, ReverbParams, DelayParams, FilterParams, DistortionParams, EQParams } from './core/Statement';

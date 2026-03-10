@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, memo } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSatieEngine } from '../hooks/useSatieEngine';
 import { SatieEditor } from '../components/SatieEditor';
@@ -9,16 +9,57 @@ import { Sidebar, type PanelVisibility } from '../components/Sidebar';
 import { Panel } from '../components/Panel';
 import { useAuth } from '../../lib/AuthContext';
 import { getSketch, updateSketch, createSketch } from '../../lib/sketches';
+import { uploadSketchSamples, loadSketchSamples } from '../../lib/sampleStorage';
+import { cacheSample } from '../../lib/sampleCache';
 import { useSFX } from '../hooks/useSFX';
+import type { Statement } from '../../engine/core/Statement';
+import { WanderType } from '../../engine/core/Statement';
 
 const DEFAULT_SCRIPT = `# satie\n`;
 const AUTOSAVE_DELAY = 2000;
+
+/** Memoized voices panel — only re-renders when statements identity changes */
+const VoicesPanel = memo(function VoicesPanel({ statements }: { statements: Statement[] }) {
+  return (
+    <div style={{
+      padding: '4px 14px 8px',
+      fontFamily: "'SF Mono', 'Consolas', monospace",
+      fontSize: '11px',
+      color: '#1a3a2a',
+      overflow: 'auto',
+      height: '100%',
+    }}>
+      {statements.length === 0 && (
+        <span style={{ opacity: 0.25 }}>no statements</span>
+      )}
+      {statements.map((stmt, i) => (
+        <div key={i} style={{
+          padding: '1px 0',
+          opacity: stmt.mute ? 0.25 : 0.7,
+        }}>
+          <span style={{ fontWeight: 600 }}>{stmt.kind}</span>{' '}
+          <span>{stmt.clip.split('/').pop()}</span>
+          {!stmt.every.isNull && (
+            <span style={{ opacity: 0.4 }}> e:{stmt.every.toString()}</span>
+          )}
+          {stmt.reverbParams && <span style={{ color: '#8b0000' }}> rv</span>}
+          {stmt.delayParams && <span style={{ color: '#8b0000' }}> dl</span>}
+          {stmt.filterParams && <span style={{ color: '#8b0000' }}> fl</span>}
+          {stmt.wanderType !== WanderType.None && (
+            <span style={{ opacity: 0.4 }}> [{stmt.wanderType}]</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+});
 
 export function Editor() {
   const { sketchId } = useParams<{ sketchId?: string }>();
   const { user } = useAuth();
   const {
-    state,
+    uiState,
+    tracksRef,
     loadScript,
     play,
     stop,
@@ -42,20 +83,35 @@ export function Editor() {
   });
 
   const autosaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  /** Raw ArrayBuffers for samples loaded this session — used for uploading on save. */
+  const sampleBuffers = useRef<Map<string, ArrayBuffer>>(new Map());
 
-  // Load sketch from DB if we have an ID
+  // Load sketch from DB if we have an ID, then load its samples
   useEffect(() => {
     if (!sketchId) return;
-    getSketch(sketchId).then((sketch) => {
+    getSketch(sketchId).then(async (sketch) => {
       if (sketch) {
         setScript(sketch.script);
         setSketchTitle(sketch.title);
         setCurrentSketchId(sketch.id);
+
+        // Load samples from Supabase Storage (with IndexedDB cache)
+        try {
+          const loaded = await loadSketchSamples(sketch.id, async (name, data) => {
+            await loadAudioBuffer(name, data);
+            sampleBuffers.current.set(name, data);
+          });
+          if (loaded.length > 0) {
+            setLoadedFiles(prev => [...new Set([...prev, ...loaded])]);
+          }
+        } catch (e) {
+          console.error('[Editor] Failed to load sketch samples:', e);
+        }
       }
     }).catch(console.error);
-  }, [sketchId]);
+  }, [sketchId, loadAudioBuffer]);
 
-  // Autosave when script changes (only for logged-in users with a saved sketch)
+  // Autosave
   useEffect(() => {
     if (!user || !currentSketchId) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
@@ -71,11 +127,14 @@ export function Editor() {
 
   const handleRun = useCallback(() => {
     loadScript(script);
-    if (!state.isPlaying) play();
-  }, [script, loadScript, state.isPlaying, play]);
+    if (!uiState.isPlaying) play();
+  }, [script, loadScript, uiState.isPlaying, play]);
 
   const handleLoadBuffer = useCallback(async (name: string, data: ArrayBuffer) => {
     await loadAudioBuffer(name, data);
+    sampleBuffers.current.set(name, data);
+    // Cache locally in IndexedDB for fast reload
+    cacheSample(name, data).catch(() => {});
     setLoadedFiles((prev) => [...new Set([...prev, name])]);
   }, [loadAudioBuffer]);
 
@@ -86,18 +145,31 @@ export function Editor() {
 
   const handleAIGenerate = useCallback((code: string) => {
     setScript(code);
-  }, []);
+    // Auto-run: load the new script and play immediately
+    loadScript(code);
+    if (!uiState.isPlaying) play();
+  }, [loadScript, uiState.isPlaying, play]);
 
-  // Save current script as a new sketch (for guest → first save, or "Save As")
   const handleSave = useCallback(async () => {
     if (!user) return;
+    let sketchIdForSamples = currentSketchId;
+
     if (currentSketchId) {
       await updateSketch(currentSketchId, { script, title: sketchTitle });
     } else {
       const sketch = await createSketch(user.id, sketchTitle, script);
       setCurrentSketchId(sketch.id);
-      // Update URL without full reload
+      sketchIdForSamples = sketch.id;
       window.history.replaceState(null, '', `/editor/${sketch.id}`);
+    }
+
+    // Upload any locally-loaded samples to Supabase Storage
+    if (sketchIdForSamples && sampleBuffers.current.size > 0) {
+      try {
+        await uploadSketchSamples(user.id, sketchIdForSamples, sampleBuffers.current);
+      } catch (e) {
+        console.error('[Editor] Failed to upload samples:', e);
+      }
     }
   }, [user, currentSketchId, script, sketchTitle]);
 
@@ -111,9 +183,9 @@ export function Editor() {
       fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
     }}>
       <Sidebar
-        isPlaying={state.isPlaying}
-        currentTime={state.currentTime}
-        trackCount={state.tracks.length}
+        isPlaying={uiState.isPlaying}
+        currentTime={uiState.currentTime}
+        trackCount={uiState.trackCount}
         onPlay={play}
         onStop={stop}
         onMasterVolume={setMasterVolume}
@@ -133,6 +205,7 @@ export function Editor() {
       }}>
         {panels.score && (
           <Panel
+            panelId="score"
             title="Score"
             defaultX={16}
             defaultY={16}
@@ -147,7 +220,7 @@ export function Editor() {
                   value={script}
                   onChange={setScript}
                   onRun={handleRun}
-                  errors={state.errors}
+                  errors={uiState.errors}
                 />
               </div>
               <div style={{
@@ -189,6 +262,7 @@ export function Editor() {
 
         {panels.samples && (
           <Panel
+            panelId="samples"
             title="Samples"
             defaultX={16}
             defaultY={572}
@@ -207,6 +281,7 @@ export function Editor() {
 
         {panels.space && (
           <Panel
+            panelId="space"
             title="Space"
             defaultX={512}
             defaultY={16}
@@ -215,12 +290,13 @@ export function Editor() {
             minWidth={280}
             minHeight={200}
           >
-            <SpatialViewport tracks={state.tracks} bgColor={spaceBgColor} onBgColorChange={setSpaceBgColor} />
+            <SpatialViewport tracksRef={tracksRef} bgColor={spaceBgColor} onBgColorChange={setSpaceBgColor} />
           </Panel>
         )}
 
         {panels.voices && (
           <Panel
+            panelId="voices"
             title="Voices"
             defaultX={512}
             defaultY={432}
@@ -229,41 +305,13 @@ export function Editor() {
             minWidth={160}
             minHeight={72}
           >
-            <div style={{
-              padding: '4px 14px 8px',
-              fontFamily: "'SF Mono', 'Consolas', monospace",
-              fontSize: '11px',
-              color: '#1a3a2a',
-              overflow: 'auto',
-              height: '100%',
-            }}>
-              {state.statements.length === 0 && (
-                <span style={{ opacity: 0.25 }}>no statements</span>
-              )}
-              {state.statements.map((stmt, i) => (
-                <div key={i} style={{
-                  padding: '1px 0',
-                  opacity: stmt.mute ? 0.25 : 0.7,
-                }}>
-                  <span style={{ fontWeight: 600 }}>{stmt.kind}</span>{' '}
-                  <span>{stmt.clip.split('/').pop()}</span>
-                  {!stmt.every.isNull && (
-                    <span style={{ opacity: 0.4 }}> e:{stmt.every.toString()}</span>
-                  )}
-                  {stmt.reverbParams && <span style={{ color: '#8b0000' }}> rv</span>}
-                  {stmt.delayParams && <span style={{ color: '#8b0000' }}> dl</span>}
-                  {stmt.filterParams && <span style={{ color: '#8b0000' }}> fl</span>}
-                  {stmt.wanderType !== 'none' && (
-                    <span style={{ opacity: 0.4 }}> [{stmt.wanderType}]</span>
-                  )}
-                </div>
-              ))}
-            </div>
+            <VoicesPanel statements={uiState.statements} />
           </Panel>
         )}
 
         {panels.ai && (
           <Panel
+            panelId="ai"
             title="AI"
             defaultX={768}
             defaultY={432}
@@ -273,7 +321,7 @@ export function Editor() {
             minHeight={160}
             borderColor="#2b2b8a"
           >
-            <AIPanel onGenerate={handleAIGenerate} />
+            <AIPanel onGenerate={handleAIGenerate} currentScript={script} loadedSamples={loadedFiles} />
           </Panel>
         )}
       </div>

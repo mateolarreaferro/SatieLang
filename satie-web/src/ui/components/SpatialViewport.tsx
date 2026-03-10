@@ -1,6 +1,6 @@
-import { useRef, useEffect, useCallback, useState, createContext, useContext } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo, memo, createContext, useContext } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Grid, Html, Trail } from '@react-three/drei';
+import { OrbitControls, Grid, Trail } from '@react-three/drei';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -9,7 +9,7 @@ import type { TrackState } from '../../engine';
 const ViewportFocusContext = createContext<{ focused: boolean }>({ focused: false });
 
 interface SpatialViewportProps {
-  tracks: TrackState[];
+  tracksRef: React.RefObject<TrackState[]>;
   bgColor?: string;
   onBgColorChange?: (color: string) => void;
 }
@@ -22,61 +22,203 @@ function BgColorUpdater({ color }: { color: string }) {
   return null;
 }
 
-function AudioSource({ track }: { track: TrackState }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const groupRef = useRef<THREE.Group>(null);
-  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+/**
+ * Individual audio source with Trail.
+ * Reads track state from ref — no React re-render needed for position/color updates.
+ */
+/** Shared mesh + useFrame logic for a single voice */
+function useAudioSourceFrame(
+  trackRef: React.RefObject<TrackState | null>,
+  meshRef: React.RefObject<THREE.Mesh | null>,
+  matRef: React.RefObject<THREE.MeshStandardMaterial | null>,
+  labelRef: React.RefObject<THREE.Sprite | null>,
+  trailMatRef?: React.RefObject<THREE.MeshStandardMaterial | null>,
+) {
+  const labelTexRef = useRef<THREE.CanvasTexture | null>(null);
+  const prevLabel = useRef<string>('');
 
   useFrame(() => {
-    if (meshRef.current) {
-      meshRef.current.position.set(track.position.x, track.position.y, track.position.z);
-      const scale = 0.12 + track.volume * 0.2;
-      meshRef.current.scale.setScalar(scale);
-    }
+    const track = trackRef.current;
+    if (!track || !meshRef.current) return;
+
+    meshRef.current.position.set(track.position.x, track.position.y, track.position.z);
+    const scale = 0.12 + track.volume * 0.2;
+    meshRef.current.scale.setScalar(scale);
+
     if (matRef.current) {
       matRef.current.color.set(track.color);
       matRef.current.emissive.set(track.color);
       matRef.current.opacity = track.alpha * 0.8;
+    }
+
+    // Keep trail material color in sync with the track color
+    if (trailMatRef?.current) {
+      trailMatRef.current.color.set(track.color);
+      trailMatRef.current.emissive.set(track.color);
+    }
+
+    if (labelRef.current) {
+      labelRef.current.position.set(track.position.x, track.position.y + 0.4, track.position.z);
+
+      const label = track.statement.clip.split('/').pop() ?? '';
+      if (label !== prevLabel.current) {
+        prevLabel.current = label;
+        if (labelTexRef.current) labelTexRef.current.dispose();
+        const canvas = document.createElement('canvas');
+        canvas.width = 256;
+        canvas.height = 32;
+        const ctx = canvas.getContext('2d')!;
+        ctx.font = '18px Inter, system-ui, sans-serif';
+        ctx.fillStyle = 'rgba(26, 58, 42, 0.5)';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, 128, 22);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.minFilter = THREE.LinearFilter;
+        labelTexRef.current = tex;
+        (labelRef.current.material as THREE.SpriteMaterial).map = tex;
+        (labelRef.current.material as THREE.SpriteMaterial).needsUpdate = true;
+      }
+    }
+  });
+}
+
+/** Voice WITH trail — only used when statement has `visual trail` */
+function AudioSourceWithTrail({ trackRef }: { trackRef: React.RefObject<TrackState | null> }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  const labelRef = useRef<THREE.Sprite>(null);
+  const trailRef = useRef<any>(null);
+
+  useAudioSourceFrame(trackRef, meshRef, matRef, labelRef);
+
+  // Update trail ribbon material color each frame
+  useFrame(() => {
+    const track = trackRef.current;
+    if (!track || !trailRef.current) return;
+    const mat = trailRef.current.material as any;
+    if (mat?.uniforms?.color) {
+      // MeshLineMaterial uses uniforms.color
+      mat.uniforms.color.value.set(track.color);
+    } else if (mat?.color) {
+      mat.color.set(track.color);
     }
   });
 
   return (
     <>
       <Trail
+        ref={trailRef}
         width={2.5}
         length={80}
         decay={1}
         attenuation={(w) => w * w}
-        color={track.color}
       >
         <mesh ref={meshRef}>
           <sphereGeometry args={[1, 24, 24]} />
           <meshStandardMaterial
             ref={matRef}
-            color={track.color}
-            emissive={track.color}
             emissiveIntensity={0.3}
             transparent
-            opacity={track.alpha * 0.8}
+            opacity={0.8}
             roughness={0.6}
+            wireframe
           />
         </mesh>
       </Trail>
-      <Html
-        position={[track.position.x, track.position.y + 0.4, track.position.z]}
-        center
-        style={{ pointerEvents: 'none' }}
-      >
-        <div style={{
-          color: '#1a3a2a',
-          fontSize: '9px',
-          fontFamily: "'Inter', system-ui, sans-serif",
-          whiteSpace: 'nowrap',
-          opacity: 0.5,
-        }}>
-          {track.statement.clip.split('/').pop()}
-        </div>
-      </Html>
+      <sprite ref={labelRef} scale={[1.2, 0.15, 1]}>
+        <spriteMaterial transparent depthTest={false} />
+      </sprite>
+    </>
+  );
+}
+
+/** Voice WITHOUT trail — default rendering */
+function AudioSourceNoTrail({ trackRef }: { trackRef: React.RefObject<TrackState | null> }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  const labelRef = useRef<THREE.Sprite>(null);
+
+  useAudioSourceFrame(trackRef, meshRef, matRef, labelRef);
+
+  return (
+    <>
+      <mesh ref={meshRef}>
+        <sphereGeometry args={[1, 24, 24]} />
+        <meshStandardMaterial
+          ref={matRef}
+          emissiveIntensity={0.3}
+          transparent
+          opacity={0.8}
+          roughness={0.6}
+          wireframe
+        />
+      </mesh>
+      <sprite ref={labelRef} scale={[1.2, 0.15, 1]}>
+        <spriteMaterial transparent depthTest={false} />
+      </sprite>
+    </>
+  );
+}
+
+/**
+ * Manages a pool of AudioSource components that read from tracksRef.
+ * Uses a fixed pool to avoid mount/unmount churn.
+ */
+const MAX_VOICES = 128;
+
+function AudioSourcePool({ tracksRef }: { tracksRef: React.RefObject<TrackState[]> }) {
+  // Pool of refs — each AudioSource reads from its assigned ref
+  const trackRefs = useMemo(() => {
+    const refs: React.RefObject<TrackState | null>[] = [];
+    for (let i = 0; i < MAX_VOICES; i++) {
+      refs.push({ current: null });
+    }
+    return refs;
+  }, []);
+
+  // Track which slots have trail — encoded as a string to minimize re-renders
+  const [slotInfo, setSlotInfo] = useState<{ count: number; trailFlags: boolean[] }>({ count: 0, trailFlags: [] });
+
+  useFrame(() => {
+    const tracks = tracksRef.current ?? [];
+    const count = Math.min(tracks.length, MAX_VOICES);
+
+    // Update refs in-place — no React state change needed for position/color
+    for (let i = 0; i < count; i++) {
+      (trackRefs[i] as { current: TrackState | null }).current = tracks[i];
+    }
+    for (let i = count; i < MAX_VOICES; i++) {
+      (trackRefs[i] as { current: TrackState | null }).current = null;
+    }
+
+    // Only trigger React re-render when voice count or trail configuration changes
+    let needsUpdate = count !== slotInfo.count;
+    if (!needsUpdate) {
+      for (let i = 0; i < count; i++) {
+        const hasTrail = tracks[i].statement.visual.includes('trail');
+        if (hasTrail !== slotInfo.trailFlags[i]) {
+          needsUpdate = true;
+          break;
+        }
+      }
+    }
+
+    if (needsUpdate) {
+      const trailFlags: boolean[] = [];
+      for (let i = 0; i < count; i++) {
+        trailFlags.push(tracks[i].statement.visual.includes('trail'));
+      }
+      setSlotInfo({ count, trailFlags });
+    }
+  });
+
+  return (
+    <>
+      {trackRefs.slice(0, slotInfo.count).map((ref, i) =>
+        slotInfo.trailFlags[i]
+          ? <AudioSourceWithTrail key={i} trackRef={ref} />
+          : <AudioSourceNoTrail key={i} trackRef={ref} />
+      )}
     </>
   );
 }
@@ -90,7 +232,7 @@ function Listener() {
   );
 }
 
-// Unity-style fly camera: WASD when viewport focused, right-click also works
+// Unity-style fly camera: WASD when viewport focused
 function FlyControls() {
   const { camera, gl } = useThree();
   const { focused } = useContext(ViewportFocusContext);
@@ -101,7 +243,13 @@ function FlyControls() {
   focusedRef.current = focused;
   const flySpeed = 5;
 
-  const MOVE_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+  // Pre-allocated vectors to avoid GC pressure in useFrame
+  const _forward = useMemo(() => new THREE.Vector3(), []);
+  const _right = useMemo(() => new THREE.Vector3(), []);
+  const _move = useMemo(() => new THREE.Vector3(), []);
+  const _up = useMemo(() => new THREE.Vector3(0, 1, 0), []);
+
+  const MOVE_KEYS = useMemo(() => new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']), []);
 
   const onKeyDown = useCallback((e: KeyboardEvent) => {
     const key = e.key.toLowerCase();
@@ -110,7 +258,7 @@ function FlyControls() {
       e.preventDefault();
       e.stopPropagation();
     }
-  }, []);
+  }, [MOVE_KEYS]);
 
   const onKeyUp = useCallback((e: KeyboardEvent) => {
     keysDown.current.delete(e.key.toLowerCase());
@@ -138,7 +286,6 @@ function FlyControls() {
     };
   }, [gl, onKeyDown, onKeyUp, onMouseDown, onMouseUp]);
 
-  // Clear keys when losing focus to prevent stuck keys
   useEffect(() => {
     if (!focused) keysDown.current.clear();
   }, [focused]);
@@ -148,27 +295,24 @@ function FlyControls() {
     if (!active) return;
 
     const keys = keysDown.current;
+    if (keys.size === 0) return;
     const speed = delta * flySpeed;
-    const forward = new THREE.Vector3();
-    const right = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
 
-    camera.getWorldDirection(forward);
-    right.crossVectors(forward, up).normalize();
+    camera.getWorldDirection(_forward);
+    _right.crossVectors(_forward, _up).normalize();
+    _move.set(0, 0, 0);
 
-    const move = new THREE.Vector3();
+    if (keys.has('w') || keys.has('arrowup')) _move.addScaledVector(_forward, speed);
+    if (keys.has('s') || keys.has('arrowdown')) _move.addScaledVector(_forward, -speed);
+    if (keys.has('a') || keys.has('arrowleft')) _move.addScaledVector(_right, -speed);
+    if (keys.has('d') || keys.has('arrowright')) _move.addScaledVector(_right, speed);
+    if (keys.has('e') || keys.has(' ')) _move.y += speed;
+    if (keys.has('q')) _move.y -= speed;
 
-    if (keys.has('w') || keys.has('arrowup')) move.add(forward.clone().multiplyScalar(speed));
-    if (keys.has('s') || keys.has('arrowdown')) move.add(forward.clone().multiplyScalar(-speed));
-    if (keys.has('a') || keys.has('arrowleft')) move.add(right.clone().multiplyScalar(-speed));
-    if (keys.has('d') || keys.has('arrowright')) move.add(right.clone().multiplyScalar(speed));
-    if (keys.has('e') || keys.has(' ')) move.y += speed;
-    if (keys.has('q')) move.y -= speed;
-
-    if (move.lengthSq() > 0) {
-      camera.position.add(move);
+    if (_move.lengthSq() > 0) {
+      camera.position.add(_move);
       if (controlsRef.current) {
-        controlsRef.current.target.add(move);
+        controlsRef.current.target.add(_move);
       }
     }
   });
@@ -188,7 +332,7 @@ function FlyControls() {
   );
 }
 
-function Scene({ tracks }: { tracks: TrackState[] }) {
+const SceneInner = memo(function SceneInner({ tracksRef }: { tracksRef: React.RefObject<TrackState[]> }) {
   return (
     <>
       <ambientLight intensity={0.5} />
@@ -201,9 +345,7 @@ function Scene({ tracks }: { tracks: TrackState[] }) {
         infiniteGrid
       />
       <Listener />
-      {tracks.map((track) => (
-        <AudioSource key={track.key} track={track} />
-      ))}
+      <AudioSourcePool tracksRef={tracksRef} />
       <FlyControls />
       <EffectComposer>
         <Bloom
@@ -215,9 +357,9 @@ function Scene({ tracks }: { tracks: TrackState[] }) {
       </EffectComposer>
     </>
   );
-}
+});
 
-export function SpatialViewport({ tracks, bgColor = '#f4f3ee', onBgColorChange }: SpatialViewportProps) {
+export const SpatialViewport = memo(function SpatialViewport({ tracksRef, bgColor = '#f4f3ee', onBgColorChange }: SpatialViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [focused, setFocused] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -241,6 +383,8 @@ export function SpatialViewport({ tracks, bgColor = '#f4f3ee', onBgColorChange }
     };
   }, []);
 
+  const focusValue = useMemo(() => ({ focused }), [focused]);
+
   return (
     <div
       ref={containerRef}
@@ -258,14 +402,14 @@ export function SpatialViewport({ tracks, bgColor = '#f4f3ee', onBgColorChange }
       <Canvas
         camera={{ position: [4, 6, 8], fov: 55 }}
         style={{ width: '100%', height: '100%' }}
-        gl={{ alpha: true, antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
+        gl={{ alpha: true, antialias: true, toneMapping: THREE.ACESFilmicToneMapping, powerPreference: 'high-performance' }}
         onCreated={({ gl }) => {
           gl.setClearColor(bgColor, 1);
         }}
       >
         <BgColorUpdater color={bgColor} />
-        <ViewportFocusContext.Provider value={{ focused }}>
-          <Scene tracks={tracks} />
+        <ViewportFocusContext.Provider value={focusValue}>
+          <SceneInner tracksRef={tracksRef} />
         </ViewportFocusContext.Provider>
       </Canvas>
       {onBgColorChange && (
@@ -303,4 +447,4 @@ export function SpatialViewport({ tracks, bgColor = '#f4f3ee', onBgColorChange }
       )}
     </div>
   );
-}
+});

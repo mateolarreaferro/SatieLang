@@ -107,6 +107,9 @@ export class Statement {
   // Color
   staticColor: string | null = null;
   staticAlpha: number = 1;
+  colorRedRange: RangeOrValue | null = null;
+  colorGreenRange: RangeOrValue | null = null;
+  colorBlueRange: RangeOrValue | null = null;
   colorRedInterpolation: InterpolationData | null = null;
   colorGreenInterpolation: InterpolationData | null = null;
   colorBlueInterpolation: InterpolationData | null = null;

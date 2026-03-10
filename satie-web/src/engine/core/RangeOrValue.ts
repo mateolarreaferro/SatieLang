@@ -62,6 +62,13 @@ export class RangeOrValue {
     return this.min + r * (this.max - this.min);
   }
 
+  /** Multiply range by a scalar, preserving range-ness. */
+  mul(k: number): RangeOrValue {
+    if (this.isNull) return this;
+    if (this.isRange) return RangeOrValue.range(this.min * k, this.max * k);
+    return RangeOrValue.single(this.min * k);
+  }
+
   toString(): string {
     if (this.isNull) return 'null';
     if (this.isRange) return `${this.min}to${this.max}`;

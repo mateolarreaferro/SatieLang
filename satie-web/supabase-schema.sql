@@ -43,3 +43,99 @@ create policy "Users can delete own sketches"
 create policy "Anyone can read public sketches"
   on public.sketches for select
   using (is_public = true);
+
+-- ============================================================
+-- Sketch Samples — manifest of audio files attached to sketches
+-- ============================================================
+
+create table public.sketch_samples (
+  id uuid default gen_random_uuid() primary key,
+  sketch_id uuid references public.sketches(id) on delete cascade not null,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  filename text not null,
+  storage_path text not null,
+  size_bytes bigint not null default 0,
+  created_at timestamptz not null default now(),
+  unique(sketch_id, filename)
+);
+
+create index sketch_samples_sketch_id_idx on public.sketch_samples(sketch_id);
+
+alter table public.sketch_samples enable row level security;
+
+create policy "Users can read own sketch samples"
+  on public.sketch_samples for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert own sketch samples"
+  on public.sketch_samples for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can delete own sketch samples"
+  on public.sketch_samples for delete
+  using (auth.uid() = user_id);
+
+-- Allow reading samples for public sketches
+create policy "Anyone can read samples of public sketches"
+  on public.sketch_samples for select
+  using (
+    exists (
+      select 1 from public.sketches
+      where sketches.id = sketch_samples.sketch_id
+        and sketches.is_public = true
+    )
+  );
+
+-- ============================================================
+-- Storage bucket for audio samples
+-- Run this separately in Supabase Dashboard > Storage, or via SQL:
+-- ============================================================
+
+insert into storage.buckets (id, name, public)
+  values ('samples', 'samples', false)
+  on conflict (id) do nothing;
+
+-- Storage RLS: users can upload to their own folder
+create policy "Users can upload own samples"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'samples'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- Users can read their own samples
+create policy "Users can read own samples"
+  on storage.objects for select
+  using (
+    bucket_id = 'samples'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- Users can delete their own samples
+create policy "Users can delete own samples"
+  on storage.objects for delete
+  using (
+    bucket_id = 'samples'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- Anyone can read samples that belong to public sketches
+create policy "Anyone can read public sketch samples"
+  on storage.objects for select
+  using (
+    bucket_id = 'samples'
+    and exists (
+      select 1 from public.sketch_samples ss
+      join public.sketches s on s.id = ss.sketch_id
+      where ss.storage_path = name
+        and s.is_public = true
+    )
+  );
+
+-- Allow upsert (update existing files)
+create policy "Users can update own samples"
+  on storage.objects for update
+  using (
+    bucket_id = 'samples'
+    and auth.uid()::text = (storage.foldername(name))[1]
+  );

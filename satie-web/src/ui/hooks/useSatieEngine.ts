@@ -1,12 +1,22 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import { SatieEngine, EngineState } from '../../engine';
+import { SatieEngine, type EngineUIState, type TrackState } from '../../engine';
 
+/**
+ * Main hook for the Satie engine.
+ *
+ * Performance design:
+ * - `uiState` updates at ~8fps (throttled) — use for time display, track count, errors
+ * - `tracksRef` points to the engine's live tracks array — use in Three.js useFrame()
+ * - Discrete events (play/stop/loadScript) trigger immediate UI updates
+ */
 export function useSatieEngine() {
   const engineRef = useRef<SatieEngine | null>(null);
-  const [state, setState] = useState<EngineState>({
+  const tracksRef = useRef<TrackState[]>([]);
+
+  const [uiState, setUIState] = useState<EngineUIState>({
     isPlaying: false,
     currentTime: 0,
-    tracks: [],
+    trackCount: 0,
     statements: [],
     errors: null,
   });
@@ -14,7 +24,14 @@ export function useSatieEngine() {
   useEffect(() => {
     const engine = new SatieEngine();
     engineRef.current = engine;
-    const unsub = engine.subscribe(setState);
+
+    // Subscribe to throttled UI updates only
+    const unsub = engine.subscribeUI((state) => {
+      // Update tracks ref (no React re-render)
+      tracksRef.current = engine.getTracksArray();
+      setUIState(state);
+    });
+
     return () => {
       unsub();
       engine.destroy();
@@ -23,6 +40,9 @@ export function useSatieEngine() {
 
   const loadScript = useCallback((script: string) => {
     engineRef.current?.loadScript(script);
+    if (engineRef.current) {
+      tracksRef.current = engineRef.current.getTracksArray();
+    }
   }, []);
 
   const play = useCallback(async () => {
@@ -31,6 +51,9 @@ export function useSatieEngine() {
 
   const stop = useCallback(() => {
     engineRef.current?.stop();
+    if (engineRef.current) {
+      tracksRef.current = engineRef.current.getTracksArray();
+    }
   }, []);
 
   const loadAudioFile = useCallback(async (name: string, url: string) => {
@@ -47,7 +70,8 @@ export function useSatieEngine() {
 
   return {
     engine: engineRef,
-    state,
+    uiState,
+    tracksRef,
     loadScript,
     play,
     stop,

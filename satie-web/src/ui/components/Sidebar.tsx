@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/AuthContext';
 import { useSFX } from '../hooks/useSFX';
@@ -27,11 +27,6 @@ interface SidebarProps {
   isSaved?: boolean;
 }
 
-interface ApiKeys {
-  anthropic: string;
-  elevenlabs: string;
-}
-
 export function Sidebar({
   isPlaying,
   currentTime,
@@ -50,26 +45,12 @@ export function Sidebar({
   const { user, signInWithGitHub, signOut } = useAuth();
   const navigate = useNavigate();
   const sfx = useSFX();
-  const [keys, setKeys] = useState<ApiKeys>({ anthropic: '', elevenlabs: '' });
-  const [showKeys, setShowKeys] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (editingTitle && titleInputRef.current) titleInputRef.current.focus();
   }, [editingTitle]);
-
-  useEffect(() => {
-    setKeys({
-      anthropic: localStorage.getItem('satie-anthropic-key') ?? '',
-      elevenlabs: localStorage.getItem('satie-elevenlabs-key') ?? '',
-    });
-  }, []);
-
-  const saveKey = useCallback((field: keyof ApiKeys, value: string) => {
-    setKeys(prev => ({ ...prev, [field]: value }));
-    localStorage.setItem(`satie-${field}-key`, value);
-  }, []);
 
   const formatTime = (t: number) => {
     const mins = Math.floor(t / 60);
@@ -220,7 +201,7 @@ export function Sidebar({
         title="Master volume"
         style={{
           width: 32,
-          accentColor: '#1a3a2a',
+          accentColor: '#000',
           opacity: 0.3,
           writingMode: 'vertical-lr',
           direction: 'rtl',
@@ -234,30 +215,70 @@ export function Sidebar({
           className="sidebar-btn"
           onClick={() => { sfx.save(); onSave(); }}
           onMouseEnter={sfx.hover}
-          title={isSaved ? 'Saved (autosaving)' : 'Save sketch'}
+          title={isSaved ? 'Saved' : 'Save sketch'}
           style={{
             width: 28,
             height: 20,
             background: 'none',
             border: 'none',
             cursor: 'pointer',
-            fontSize: '8px',
-            fontFamily: "'SF Mono', monospace",
-            color: '#1a3a2a',
-            opacity: isSaved ? 0.25 : 0.6,
-            letterSpacing: '0.02em',
+            opacity: isSaved ? 0.2 : 0.5,
             padding: 0,
             marginTop: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'opacity 0.15s',
           }}
         >
-          {isSaved ? 'sv' : 'SV'}
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#1a3a2a" strokeWidth="1.2">
+            <path d="M2.5 1.5h7l2.5 2.5v8h-10v-10.5z" strokeLinejoin="round"/>
+            <path d="M4.5 1.5v3h5v-3" strokeLinejoin="round"/>
+            <rect x="4" y="8" width="6" height="3.5" rx="0.5"/>
+          </svg>
         </button>
       )}
 
       {/* Panel toggles */}
       <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
         {(['score', 'samples', 'space', 'voices', 'ai'] as const).map((key) => {
-          const label = { score: 'sc', samples: 'sa', space: 'sp', voices: 'vo', ai: 'ai' }[key];
+          const icon = {
+            score: (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3">
+                <path d="M4 3 L1 7 L4 11" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M10 3 L13 7 L10 11" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ),
+            samples: (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <path d="M3 1.5 L3 12.5 L11.5 12.5 L11.5 4.5 L8.5 1.5 Z" strokeLinejoin="round"/>
+                <path d="M8.5 1.5 L8.5 4.5 L11.5 4.5" strokeLinejoin="round"/>
+              </svg>
+            ),
+            space: (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <path d="M7 1 L13 4.5 L13 9.5 L7 13 L1 9.5 L1 4.5 Z" strokeLinejoin="round"/>
+                <path d="M7 1 L7 13" />
+                <path d="M1 4.5 L13 9.5" />
+                <path d="M13 4.5 L1 9.5" />
+              </svg>
+            ),
+            voices: (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <line x1="2" y1="3.5" x2="12" y2="3.5" strokeLinecap="round"/>
+                <line x1="2" y1="7" x2="12" y2="7" strokeLinecap="round"/>
+                <line x1="2" y1="10.5" x2="12" y2="10.5" strokeLinecap="round"/>
+              </svg>
+            ),
+            ai: (
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.2">
+                <path d="M7 1.5 C7 1.5 3 1.5 3 5 C3 7 4.5 7.5 4.5 9.5 L9.5 9.5 C9.5 7.5 11 7 11 5 C11 1.5 7 1.5 7 1.5 Z" strokeLinejoin="round"/>
+                <line x1="5" y1="9.5" x2="5" y2="11.5" strokeLinecap="round"/>
+                <line x1="9" y1="9.5" x2="9" y2="11.5" strokeLinecap="round"/>
+                <path d="M5 11.5 Q7 13 9 11.5" strokeLinecap="round"/>
+              </svg>
+            ),
+          }[key];
           return (
           <button
             key={key}
@@ -267,21 +288,20 @@ export function Sidebar({
             title={`${panels[key] ? 'Hide' : 'Show'} ${key}`}
             style={{
               width: 28,
-              height: 20,
+              height: 22,
               background: 'none',
               border: 'none',
               cursor: 'pointer',
-              fontSize: '8px',
-              fontFamily: "'SF Mono', monospace",
               color: '#1a3a2a',
               opacity: panels[key] ? 0.6 : 0.15,
-              letterSpacing: '0.02em',
               padding: 0,
               transition: 'opacity 0.15s',
-              textTransform: 'uppercase',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            {label}
+            {icon}
           </button>
           );
         })}
@@ -360,117 +380,6 @@ export function Sidebar({
             <path d="M2 13c0-2.8 2.2-5 5-5s5 2.2 5 5" strokeLinecap="round"/>
           </svg>
         </button>
-      )}
-
-      {/* Settings/Keys toggle */}
-      <button
-        className="sidebar-btn"
-        onClick={() => { sfx.toggle(); setShowKeys(!showKeys); }}
-        onMouseEnter={sfx.hover}
-        title="API Keys"
-        style={{
-          width: 28,
-          height: 28,
-          background: 'none',
-          border: '1px solid ' + (showKeys ? '#1a3a2a' : '#d0cdc4'),
-          borderRadius: 8,
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: '11px',
-          color: '#1a3a2a',
-          opacity: showKeys ? 0.8 : 0.3,
-          transition: 'opacity 0.15s',
-          marginBottom: '4px',
-        }}
-      >
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#1a3a2a" strokeWidth="1.2">
-          <circle cx="5" cy="5" r="3.5"/>
-          <line x1="7.5" y1="7.5" x2="13" y2="13" strokeLinecap="round"/>
-          <line x1="10" y1="11" x2="12" y2="11" strokeLinecap="round"/>
-          <line x1="11" y1="9" x2="13" y2="9" strokeLinecap="round"/>
-        </svg>
-      </button>
-
-      {/* Keys popover */}
-      {showKeys && (
-        <div style={{
-          position: 'absolute',
-          left: 58,
-          bottom: 16,
-          width: 260,
-          background: '#faf9f6',
-          border: '1.5px solid #1a3a2a',
-          borderRadius: 16,
-          padding: '14px 16px',
-          boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
-          zIndex: 200,
-        }}>
-          <div style={{
-            fontSize: '11px',
-            fontWeight: 600,
-            color: '#1a3a2a',
-            marginBottom: '10px',
-          }}>
-            API Keys
-          </div>
-
-          <label style={{ display: 'block', marginBottom: '8px' }}>
-            <div style={{ fontSize: '9px', color: '#1a3a2a', opacity: 0.4, marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Anthropic
-            </div>
-            <input
-              type="password"
-              placeholder="sk-ant-..."
-              value={keys.anthropic}
-              onChange={(e) => saveKey('anthropic', e.target.value)}
-              style={{
-                width: '100%',
-                padding: '5px 8px',
-                border: '1px solid #d0cdc4',
-                borderRadius: 8,
-                fontSize: '10px',
-                fontFamily: "'SF Mono', monospace",
-                background: '#faf9f6',
-                outline: 'none',
-                color: '#1a3a2a',
-              }}
-            />
-          </label>
-
-          <label style={{ display: 'block' }}>
-            <div style={{ fontSize: '9px', color: '#1a3a2a', opacity: 0.4, marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              ElevenLabs
-            </div>
-            <input
-              type="password"
-              placeholder="sk_..."
-              value={keys.elevenlabs}
-              onChange={(e) => saveKey('elevenlabs', e.target.value)}
-              style={{
-                width: '100%',
-                padding: '5px 8px',
-                border: '1px solid #d0cdc4',
-                borderRadius: 8,
-                fontSize: '10px',
-                fontFamily: "'SF Mono', monospace",
-                background: '#faf9f6',
-                outline: 'none',
-                color: '#1a3a2a',
-              }}
-            />
-          </label>
-
-          <div style={{
-            fontSize: '9px',
-            color: '#1a3a2a',
-            opacity: 0.2,
-            marginTop: '8px',
-          }}>
-            stored locally
-          </div>
-        </div>
       )}
     </div>
   );

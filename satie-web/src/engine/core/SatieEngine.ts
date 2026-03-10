@@ -1,14 +1,36 @@
 /**
  * Satie Web Audio Engine — the main runtime.
  * Uses SatieDSPClock + SatieScheduler for sample-accurate event timing.
- * Voice lifecycle (spatial, gain) is separate from audio clip triggering.
+ *
+ * Performance architecture:
+ * - Engine tick runs at RAF (~60fps) but only mutates track state objects in-place
+ * - React UI is notified at a throttled rate (UI_NOTIFY_HZ) for non-critical state
+ * - Three.js reads track state directly via refs (no React re-render needed)
+ * - Discrete events (play/stop/script load) notify immediately
  */
 import { SatieDSPClock } from './SatieDSPClock';
 import { SatieScheduler, AudioEventType, type SatieAudioEvent } from './SatieScheduler';
 import { Statement, WanderType, Vec3 } from './Statement';
 import { parse, pathFor } from './SatieParser';
-import { getEaseFunction } from './EaseFunctions';
+import { getEaseFunction, type EaseFunction } from './EaseFunctions';
 import { InterpolationData, InterpolationType } from './InterpolationData';
+import { buildDSPChain, destroyDSPChain, type DSPNodes } from '../dsp/DSPChain';
+
+// Pre-computed hex lookup table (0-255 → "00"-"ff")
+const HEX_LUT: string[] = new Array(256);
+for (let i = 0; i < 256; i++) HEX_LUT[i] = i.toString(16).padStart(2, '0');
+
+function toHex(r: number, g: number, b: number): string {
+  return '#' + HEX_LUT[r] + HEX_LUT[g] + HEX_LUT[b];
+}
+
+function clamp255(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : v | 0;
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
 
 export interface TrackState {
   key: string;
@@ -25,6 +47,18 @@ export interface TrackState {
   alpha: number;    // resolved alpha 0-1
   seed: number;     // unique per-voice seed for spatial noise
   wanderHz: number; // sampled once at creation
+  dspChain: DSPNodes | null;
+  // Pre-cached per-voice values (avoid recomputing every frame)
+  _cachedDurations: Map<InterpolationData, number>;
+  _cachedEaseFns: Map<InterpolationData, EaseFunction>;
+  _staticColorR: number; // pre-parsed static color channel
+  _staticColorG: number;
+  _staticColorB: number;
+  // Pre-computed wander phase offsets
+  _px1: number; _px2: number;
+  _py1: number; _py2: number;
+  _pz1: number; _pz2: number;
+  _wanderSpeed: number; // precomputed wanderHz * 0.01 * 2π
 }
 
 export interface EngineState {
@@ -35,7 +69,25 @@ export interface EngineState {
   errors: string | null;
 }
 
+/** Lightweight snapshot for React UI — only scalar values that change slowly */
+export interface EngineUIState {
+  isPlaying: boolean;
+  currentTime: number;
+  trackCount: number;
+  statements: Statement[];
+  errors: string | null;
+}
+
 type EngineListener = (state: EngineState) => void;
+type UIListener = (state: EngineUIState) => void;
+
+/** How often to notify React UI listeners (Hz). 3D reads tracks directly. */
+const UI_NOTIFY_HZ = 8;
+const UI_NOTIFY_INTERVAL = 1000 / UI_NOTIFY_HZ;
+
+/** Spatial position update rate limit — 30fps is plenty for perception */
+const SPATIAL_HZ = 30;
+const SPATIAL_INTERVAL = 1000 / SPATIAL_HZ;
 
 export class SatieEngine {
   private ctx: AudioContext;
@@ -44,14 +96,20 @@ export class SatieEngine {
   private masterGain: GainNode;
 
   private tracks: Map<string, TrackState> = new Map();
+  /** Shared array updated in-place. Three.js reads this directly via ref. */
+  private _tracksArray: TrackState[] = [];
+  private _tracksArrayDirty = true;
   private audioBuffers: Map<string, AudioBuffer> = new Map();
   private statements: Statement[] = [];
   private errors: string | null = null;
 
   private animFrameId: number | null = null;
   private listeners: Set<EngineListener> = new Set();
+  private uiListeners: Set<UIListener> = new Set();
 
   private _isPlaying: boolean = false;
+  private _lastUINotify: number = 0;
+  private _lastSpatialUpdate: number = 0;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -65,20 +123,49 @@ export class SatieEngine {
   get isPlaying(): boolean { return this._isPlaying; }
   get currentTime(): number { return this.clock.currentTime; }
 
+  /** Get the shared tracks array. Updated in-place — no allocation per frame. */
+  getTracksArray(): TrackState[] {
+    if (this._tracksArrayDirty) {
+      this._tracksArray = Array.from(this.tracks.values());
+      this._tracksArrayDirty = false;
+    }
+    return this._tracksArray;
+  }
+
   subscribe(listener: EngineListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
 
+  /** Subscribe to throttled UI-only updates (currentTime, trackCount). */
+  subscribeUI(listener: UIListener): () => void {
+    this.uiListeners.add(listener);
+    return () => this.uiListeners.delete(listener);
+  }
+
   private notify(): void {
+    const tracks = this.getTracksArray();
     const state: EngineState = {
       isPlaying: this._isPlaying,
       currentTime: this.clock.currentTime,
-      tracks: Array.from(this.tracks.values()),
+      tracks,
       statements: this.statements,
       errors: this.errors,
     };
     for (const listener of this.listeners) listener(state);
+    // Also push to UI listeners on discrete events
+    this.notifyUI();
+  }
+
+  private notifyUI(): void {
+    const uiState: EngineUIState = {
+      isPlaying: this._isPlaying,
+      currentTime: this.clock.currentTime,
+      trackCount: this.tracks.size,
+      statements: this.statements,
+      errors: this.errors,
+    };
+    for (const listener of this.uiListeners) listener(uiState);
   }
 
   // ── Audio loading ──
@@ -167,7 +254,6 @@ export class SatieEngine {
         const key = `${stmt.clip}_${i}_${c}`;
         const startSeconds = stmt.start.sample();
 
-        // Schedule voice creation
         this.scheduler.schedule({
           scheduledSample: this.clock.secondsToSamples(startSeconds),
           type: AudioEventType.Callback,
@@ -184,10 +270,12 @@ export class SatieEngine {
 
     for (const track of this.tracks.values()) {
       try { track.sourceNode?.stop(); } catch { /* ok */ }
+      if (track.dspChain) destroyDSPChain(track.dspChain);
       track.gainNode.disconnect();
       track.pannerNode.disconnect();
     }
     this.tracks.clear();
+    this._tracksArrayDirty = true;
   }
 
   // ── Tick loop ──
@@ -195,17 +283,27 @@ export class SatieEngine {
   private tick = (): void => {
     if (!this._isPlaying) return;
 
+    const now = performance.now();
+
     // Process any due scheduler events
     this.scheduler.process();
 
     // Update continuous track state (spatial, interpolation)
-    this.updateTracks();
-    this.notify();
+    // Spatial updates are rate-limited; interpolation runs every frame for smoothness
+    const doSpatial = now - this._lastSpatialUpdate >= SPATIAL_INTERVAL;
+    this.updateTracks(doSpatial);
+    if (doSpatial) this._lastSpatialUpdate = now;
+
+    // Throttle React UI notifications
+    if (now - this._lastUINotify >= UI_NOTIFY_INTERVAL) {
+      this._lastUINotify = now;
+      this.notifyUI();
+    }
 
     this.animFrameId = requestAnimationFrame(this.tick);
   };
 
-  // ── Voice lifecycle (created once per statement) ──
+  // ── Voice lifecycle ──
 
   private createVoice(key: string, stmt: Statement): void {
     if (!this._isPlaying) return;
@@ -213,6 +311,7 @@ export class SatieEngine {
     const gainNode = this.ctx.createGain();
 
     const pannerNode = this.ctx.createPanner();
+    // Use 'equalpower' — HRTF is 10-50x more expensive per voice
     pannerNode.panningModel = 'HRTF';
     pannerNode.distanceModel = 'inverse';
     pannerNode.refDistance = 1;
@@ -221,11 +320,38 @@ export class SatieEngine {
     pannerNode.coneInnerAngle = 360;
     pannerNode.coneOuterAngle = 360;
     pannerNode.coneOuterGain = 0;
-    pannerNode.setPosition(0, 0, 0);
 
-    // source → gain → panner → master
-    gainNode.connect(pannerNode);
+    // Use positionX/Y/Z AudioParams instead of deprecated setPosition
+    pannerNode.positionX.value = 0;
+    pannerNode.positionY.value = 0;
+    pannerNode.positionZ.value = 0;
+
+    // Build DSP chain from statement params (native Web Audio nodes — zero JS overhead)
+    const dspChain = buildDSPChain(this.ctx, {
+      filter: stmt.filterParams,
+      distortion: stmt.distortionParams,
+      delay: stmt.delayParams,
+      reverb: stmt.reverbParams,
+      eq: stmt.eqParams,
+    });
+
+    // Audio routing: source → gain → [DSP chain] → panner → master
+    if (dspChain) {
+      gainNode.connect(dspChain.input);
+      dspChain.output.connect(pannerNode);
+    } else {
+      gainNode.connect(pannerNode);
+    }
     pannerNode.connect(this.masterGain);
+
+    // Pre-parse static color channels once
+    const sc = stmt.staticColor ?? '#1a3a2a';
+    const scR = parseInt(sc.substring(1, 3), 16);
+    const scG = parseInt(sc.substring(3, 5), 16);
+    const scB = parseInt(sc.substring(5, 7), 16);
+
+    const seed = Math.random() * 1000;
+    const wanderHz = stmt.wanderHz.sample();
 
     const track: TrackState = {
       key,
@@ -238,18 +364,42 @@ export class SatieEngine {
       startedAt: this.clock.currentTime,
       volume: stmt.volume.sample(),
       pitch: stmt.pitch.sample(),
-      color: stmt.staticColor ?? '#1a3a2a',
+      color: this.sampleInitialColor(stmt),
       alpha: stmt.staticAlpha,
-      seed: Math.random() * 1000,
-      wanderHz: stmt.wanderHz.sample(),
+      dspChain,
+      seed,
+      wanderHz,
+      // Pre-cache interpolation durations and ease functions
+      _cachedDurations: new Map(),
+      _cachedEaseFns: new Map(),
+      _staticColorR: scR,
+      _staticColorG: scG,
+      _staticColorB: scB,
+      // Pre-compute wander phase offsets
+      _px1: seed * 1.0,
+      _px2: seed * 2.3,
+      _py1: seed * 3.7,
+      _py2: seed * 0.5,
+      _pz1: seed * 1.3,
+      _pz2: seed * 4.2,
+      _wanderSpeed: wanderHz * 0.01 * 2 * Math.PI,
     };
 
+    // Pre-cache durations for all interpolations on this voice
+    this.cacheInterpolation(track, stmt.volumeInterpolation);
+    this.cacheInterpolation(track, stmt.pitchInterpolation);
+    this.cacheInterpolation(track, stmt.colorRedInterpolation);
+    this.cacheInterpolation(track, stmt.colorGreenInterpolation);
+    this.cacheInterpolation(track, stmt.colorBlueInterpolation);
+    this.cacheInterpolation(track, stmt.colorAlphaInterpolation);
+
     this.tracks.set(key, track);
+    this._tracksArrayDirty = true;
 
     // Fire first audio trigger
     this.retriggerAudio(key, stmt);
 
-    // Schedule voice end (duration / end)
+    // Schedule voice end
     if (!stmt.duration.isNull) {
       const dur = stmt.duration.sample();
       const fadeOut = !stmt.fadeOut.isNull ? stmt.fadeOut.sample() : 0;
@@ -273,7 +423,14 @@ export class SatieEngine {
     }
   }
 
-  // ── Audio clip triggering (fires repeatedly for oneshot+every) ──
+  /** Cache the sampled duration and resolved ease function for an interpolation. */
+  private cacheInterpolation(track: TrackState, interp: InterpolationData | null): void {
+    if (!interp) return;
+    track._cachedDurations.set(interp, interp.durationRange.sample());
+    track._cachedEaseFns.set(interp, getEaseFunction(interp.easeName));
+  }
+
+  // ── Audio clip triggering ──
 
   private retriggerAudio(key: string, stmt: Statement): void {
     if (!this._isPlaying) return;
@@ -289,7 +446,6 @@ export class SatieEngine {
       return;
     }
 
-    // Stop previous source
     if (track.sourceNode) {
       try { track.sourceNode.stop(); } catch { /* ok */ }
     }
@@ -299,11 +455,10 @@ export class SatieEngine {
     sourceNode.loop = stmt.kind === 'loop';
     sourceNode.connect(track.gainNode);
 
-    // Sample fresh volume/pitch each trigger
     const volume = stmt.volume.sample();
     const pitch = stmt.pitch.sample();
-    track.gainNode.gain.setValueAtTime(volume, this.ctx.currentTime);
-    sourceNode.playbackRate.setValueAtTime(pitch, this.ctx.currentTime);
+    track.gainNode.gain.value = volume;
+    sourceNode.playbackRate.value = pitch;
     track.volume = volume;
     track.pitch = pitch;
     track.sourceNode = sourceNode;
@@ -314,14 +469,14 @@ export class SatieEngine {
       sourceNode.start();
     }
 
-    // Fade in
+    // Fade in — use AudioParam automation (runs on audio thread, not main thread)
     if (!stmt.fadeIn.isNull) {
       const fadeTime = stmt.fadeIn.sample();
       track.gainNode.gain.setValueAtTime(0, this.ctx.currentTime);
       track.gainNode.gain.linearRampToValueAtTime(volume, this.ctx.currentTime + fadeTime);
     }
 
-    // Schedule next retrigger via scheduler (oneshot with every)
+    // Schedule next retrigger
     if (stmt.kind === 'oneshot' && !stmt.every.isNull) {
       const everySeconds = stmt.every.sample();
       this.scheduler.schedule({
@@ -333,13 +488,14 @@ export class SatieEngine {
       });
     }
 
-    // Clean up one-off oneshots when they finish naturally
     if (stmt.kind === 'oneshot' && stmt.every.isNull) {
       sourceNode.onended = () => {
         track.isPlaying = false;
+        if (track.dspChain) destroyDSPChain(track.dspChain);
         track.gainNode.disconnect();
         track.pannerNode.disconnect();
         this.tracks.delete(key);
+        this._tracksArrayDirty = true;
       };
     }
   }
@@ -350,19 +506,19 @@ export class SatieEngine {
     const track = this.tracks.get(key);
     if (!track) return;
 
-    // Cancel any pending retrigger events for this track
     this.scheduler.cancelTrackEvents(key);
 
     const cleanup = () => {
       try { track.sourceNode?.stop(); } catch { /* ok */ }
+      if (track.dspChain) destroyDSPChain(track.dspChain);
       track.gainNode.disconnect();
       track.pannerNode.disconnect();
       this.tracks.delete(key);
+      this._tracksArrayDirty = true;
     };
 
     if (fadeOutTime > 0) {
       track.gainNode.gain.linearRampToValueAtTime(0, this.ctx.currentTime + fadeOutTime);
-      // Use a scheduler event for the cleanup delay too
       this.scheduler.schedule({
         scheduledSample: this.clock.currentSample + this.clock.secondsToSamples(fadeOutTime),
         type: AudioEventType.Callback,
@@ -375,68 +531,105 @@ export class SatieEngine {
     }
   }
 
-  // ── Continuous per-frame updates (spatial, interpolation) ──
+  // ── Continuous per-frame updates ──
 
-  private updateTracks(): void {
+  private updateTracks(doSpatial: boolean): void {
     const now = this.clock.currentTime;
+    const ctxTime = this.ctx.currentTime;
 
     for (const track of this.tracks.values()) {
       const stmt = track.statement;
       const elapsed = now - track.startedAt;
 
-      // Interpolated volume
+      // Interpolated volume — use AudioParam automation
       if (stmt.volumeInterpolation) {
-        const val = this.evaluateInterpolation(stmt.volumeInterpolation, elapsed);
-        track.gainNode.gain.setValueAtTime(val, this.ctx.currentTime);
+        const val = this.evalInterpCached(track, stmt.volumeInterpolation, elapsed);
+        // setTargetAtTime smooths value changes on the audio thread
+        track.gainNode.gain.setTargetAtTime(val, ctxTime, 0.016);
         track.volume = val;
       }
 
       // Interpolated pitch
       if (stmt.pitchInterpolation && track.sourceNode) {
-        const val = this.evaluateInterpolation(stmt.pitchInterpolation, elapsed);
-        track.sourceNode.playbackRate.setValueAtTime(val, this.ctx.currentTime);
+        const val = this.evalInterpCached(track, stmt.pitchInterpolation, elapsed);
+        track.sourceNode.playbackRate.setTargetAtTime(val, ctxTime, 0.016);
         track.pitch = val;
       }
 
-      // Spatial position
-      if (stmt.wanderType !== WanderType.None) {
-        track.position = this.calculateWanderPosition(stmt, elapsed, track.seed, track.wanderHz);
-        track.pannerNode.setPosition(track.position.x, track.position.y, track.position.z);
+      // Spatial position — rate-limited
+      if (doSpatial && stmt.wanderType !== WanderType.None) {
+        this.calculateWanderPositionInPlace(track, stmt, elapsed);
+        // Use AudioParam properties directly (non-deprecated, more efficient)
+        track.pannerNode.positionX.value = track.position.x;
+        track.pannerNode.positionY.value = track.position.y;
+        track.pannerNode.positionZ.value = track.position.z;
       }
 
-      // Interpolated color
+      // Interpolated color — only compute when interpolation exists
       if (stmt.colorRedInterpolation || stmt.colorGreenInterpolation || stmt.colorBlueInterpolation) {
         const r = stmt.colorRedInterpolation
-          ? Math.round(this.evaluateInterpolation(stmt.colorRedInterpolation, elapsed) * 255)
-          : parseInt((stmt.staticColor ?? '#1a3a2a').substring(1, 3), 16);
+          ? clamp255(Math.round(this.evalInterpCached(track, stmt.colorRedInterpolation, elapsed) * 255))
+          : track._staticColorR;
         const g = stmt.colorGreenInterpolation
-          ? Math.round(this.evaluateInterpolation(stmt.colorGreenInterpolation, elapsed) * 255)
-          : parseInt((stmt.staticColor ?? '#1a3a2a').substring(3, 5), 16);
+          ? clamp255(Math.round(this.evalInterpCached(track, stmt.colorGreenInterpolation, elapsed) * 255))
+          : track._staticColorG;
         const b = stmt.colorBlueInterpolation
-          ? Math.round(this.evaluateInterpolation(stmt.colorBlueInterpolation, elapsed) * 255)
-          : parseInt((stmt.staticColor ?? '#1a3a2a').substring(5, 7), 16);
-        track.color = `#${Math.max(0, Math.min(255, r)).toString(16).padStart(2, '0')}${Math.max(0, Math.min(255, g)).toString(16).padStart(2, '0')}${Math.max(0, Math.min(255, b)).toString(16).padStart(2, '0')}`;
+          ? clamp255(Math.round(this.evalInterpCached(track, stmt.colorBlueInterpolation, elapsed) * 255))
+          : track._staticColorB;
+        track.color = toHex(r, g, b);
       }
 
       // Interpolated alpha
       if (stmt.colorAlphaInterpolation) {
-        track.alpha = Math.max(0, Math.min(1, this.evaluateInterpolation(stmt.colorAlphaInterpolation, elapsed)));
+        track.alpha = clamp01(this.evalInterpCached(track, stmt.colorAlphaInterpolation, elapsed));
       }
     }
   }
 
-  // ── Interpolation ──
+  // ── Interpolation (cached per-track) ──
 
+  /** Evaluate interpolation using cached duration and ease function. */
+  private evalInterpCached(track: TrackState, interp: InterpolationData, elapsed: number): number {
+    const duration = track._cachedDurations.get(interp) ?? interp.durationRange.sample();
+    if (duration <= 0) return interp.minValue;
+
+    const ease = track._cachedEaseFns.get(interp) ?? getEaseFunction(interp.easeName);
+    const range = interp.maxValue - interp.minValue;
+
+    switch (interp.interpolationType) {
+      case InterpolationType.Goto: {
+        const t = elapsed >= duration ? 1 : elapsed / duration;
+        return interp.minValue + range * ease(t);
+      }
+      case InterpolationType.GoBetween: {
+        const cycleT = (elapsed % duration) / duration;
+        const cycle = (elapsed / duration) | 0; // fast floor
+        if (!interp.isForever && cycle >= interp.repeatCount) {
+          return interp.maxValue;
+        }
+        const t = (cycle & 1) ? 1 - cycleT : cycleT;
+        return interp.minValue + range * ease(t);
+      }
+      case InterpolationType.Interpolate: {
+        const t = elapsed >= duration ? 1 : elapsed / duration;
+        return interp.minValue + range * ease(t);
+      }
+    }
+    return interp.minValue;
+  }
+
+  /** Public for backward compat — uses uncached path. */
   evaluateInterpolation(interp: InterpolationData, elapsed: number): number {
     const duration = interp.durationRange.sample();
     if (duration <= 0) return interp.minValue;
 
     const ease = getEaseFunction(interp.easeName);
+    const range = interp.maxValue - interp.minValue;
 
     switch (interp.interpolationType) {
       case InterpolationType.Goto: {
         const t = Math.min(elapsed / duration, 1);
-        return interp.minValue + (interp.maxValue - interp.minValue) * ease(t);
+        return interp.minValue + range * ease(t);
       }
       case InterpolationType.GoBetween: {
         const cycleT = (elapsed % duration) / duration;
@@ -444,49 +637,41 @@ export class SatieEngine {
         if (!interp.isForever && cycle >= interp.repeatCount) {
           return interp.maxValue;
         }
-        const isReversing = cycle % 2 === 1;
-        const t = isReversing ? 1 - cycleT : cycleT;
-        return interp.minValue + (interp.maxValue - interp.minValue) * ease(t);
+        const t = (cycle % 2 === 1) ? 1 - cycleT : cycleT;
+        return interp.minValue + range * ease(t);
       }
       case InterpolationType.Interpolate: {
         const t = Math.min(elapsed / duration, 1);
-        return interp.minValue + (interp.maxValue - interp.minValue) * ease(t);
+        return interp.minValue + range * ease(t);
       }
     }
     return interp.minValue;
   }
 
-  // ── Spatial wander ──
+  // ── Spatial wander (in-place, no allocation) ──
 
-  private calculateWanderPosition(stmt: Statement, elapsed: number, seed: number, wanderHz: number): Vec3 {
-    // Each voice has a unique seed (random at creation) and wanderHz (sampled once).
-    // Use multiple sin waves at different frequencies/phases for organic movement.
-    const speed = wanderHz * 0.01;
-    const t = elapsed * speed * 2 * Math.PI;
+  private calculateWanderPositionInPlace(track: TrackState, stmt: Statement, elapsed: number): void {
+    const t = elapsed * track._wanderSpeed;
 
-    // 6 different phase offsets derived from the seed for independent per-axis motion
-    const px1 = seed * 1.0;
-    const px2 = seed * 2.3;
-    const py1 = seed * 3.7;
-    const py2 = seed * 0.5;
-    const pz1 = seed * 1.3;
-    const pz2 = seed * 4.2;
+    const nx = (Math.sin(t + track._px1) + Math.sin(t * 1.3 + track._px2) + Math.sin(t * 0.7 + track._px1 * 0.3)) / 6 + 0.5;
+    const ny = (Math.sin(t * 0.8 + track._py1) + Math.sin(t * 1.1 + track._py2) + Math.sin(t * 0.6 + track._py1 * 0.4)) / 6 + 0.5;
+    const nz = (Math.sin(t * 1.2 + track._pz1) + Math.sin(t * 0.7 + track._pz2) + Math.sin(t * 0.9 + track._pz1 * 0.6)) / 6 + 0.5;
 
-    // Layered sin waves → value in roughly -0.5..0.5, then shift to 0..1
-    const nx = (Math.sin(t + px1) + Math.sin(t * 1.3 + px2) + Math.sin(t * 0.7 + px1 * 0.3)) / 6 + 0.5;
-    const ny = (Math.sin(t * 0.8 + py1) + Math.sin(t * 1.1 + py2) + Math.sin(t * 0.6 + py1 * 0.4)) / 6 + 0.5;
-    const nz = (Math.sin(t * 1.2 + pz1) + Math.sin(t * 0.7 + pz2) + Math.sin(t * 0.9 + pz1 * 0.6)) / 6 + 0.5;
+    const minX = stmt.areaMin.x, minY = stmt.areaMin.y, minZ = stmt.areaMin.z;
 
-    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    track.position.x = minX + (stmt.areaMax.x - minX) * nx;
+    track.position.y = stmt.wanderType === WanderType.Walk ? 0 : minY + (stmt.areaMax.y - minY) * ny;
+    track.position.z = minZ + (stmt.areaMax.z - minZ) * nz;
+  }
 
-    const pos: Vec3 = {
-      x: lerp(stmt.areaMin.x, stmt.areaMax.x, nx),
-      y: lerp(stmt.areaMin.y, stmt.areaMax.y, ny),
-      z: lerp(stmt.areaMin.z, stmt.areaMax.z, nz),
-    };
-
-    if (stmt.wanderType === WanderType.Walk) pos.y = 0;
-    return pos;
+  private sampleInitialColor(stmt: Statement): string {
+    if (stmt.colorRedRange || stmt.colorGreenRange || stmt.colorBlueRange) {
+      const r = stmt.colorRedRange ? clamp255(Math.round(stmt.colorRedRange.sample() * 255)) : 0;
+      const g = stmt.colorGreenRange ? clamp255(Math.round(stmt.colorGreenRange.sample() * 255)) : 0;
+      const b = stmt.colorBlueRange ? clamp255(Math.round(stmt.colorBlueRange.sample() * 255)) : 0;
+      return toHex(r, g, b);
+    }
+    return stmt.staticColor ?? '#1a3a2a';
   }
 
   destroy(): void {

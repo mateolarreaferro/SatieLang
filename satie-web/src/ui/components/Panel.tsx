@@ -1,8 +1,36 @@
 import { useRef, useState, useCallback, useEffect, type ReactNode } from 'react';
 
+const LS_PREFIX = 'satie-panel-';
+const SAVE_DELAY = 500;
+
+interface PanelLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function loadLayout(id: string | undefined): PanelLayout | null {
+  if (!id) return null;
+  try {
+    const raw = localStorage.getItem(LS_PREFIX + id);
+    if (!raw) return null;
+    return JSON.parse(raw) as PanelLayout;
+  } catch {
+    return null;
+  }
+}
+
+function saveLayout(id: string | undefined, layout: PanelLayout): void {
+  if (!id) return;
+  localStorage.setItem(LS_PREFIX + id, JSON.stringify(layout));
+}
+
 interface PanelProps {
   title?: string;
   children: ReactNode;
+  /** Stable ID for persisting layout (e.g. "score", "space"). If omitted, layout is not saved. */
+  panelId?: string;
   defaultWidth?: number;
   defaultHeight?: number;
   defaultX?: number;
@@ -17,6 +45,7 @@ interface PanelProps {
 export function Panel({
   title,
   children,
+  panelId,
   defaultWidth = 400,
   defaultHeight = 300,
   defaultX = 20,
@@ -28,12 +57,24 @@ export function Panel({
   compact = false,
 }: PanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: defaultX, y: defaultY });
-  const [size, setSize] = useState({ w: defaultWidth, h: defaultHeight });
+  const saved = useRef(loadLayout(panelId));
+  const [pos, setPos] = useState({ x: saved.current?.x ?? defaultX, y: saved.current?.y ?? defaultY });
+  const [size, setSize] = useState({ w: saved.current?.w ?? defaultWidth, h: saved.current?.h ?? defaultHeight });
   const [isDragging, setIsDragging] = useState(false);
   const [resizeEdge, setResizeEdge] = useState<string | null>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const startRect = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Persist layout on change (debounced)
+  useEffect(() => {
+    if (!panelId) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveLayout(panelId, { x: pos.x, y: pos.y, w: size.w, h: size.h });
+    }, SAVE_DELAY);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [panelId, pos.x, pos.y, size.w, size.h]);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('[data-edge]')) return;

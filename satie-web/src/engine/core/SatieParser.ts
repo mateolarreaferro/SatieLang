@@ -153,6 +153,7 @@ function parseSingle(block: string): Statement {
         if (hasInterpolation(v)) s.pitchInterpolation = InterpolationData.parse(v);
         else s.pitch = RangeOrValue.parse(v);
         break;
+      case 'starts_at': // Legacy alias
       case 'start': s.start = RangeOrValue.parse(v); break;
       case 'end': parseEnd(s, v); break;
       case 'duration': s.duration = RangeOrValue.parse(v); break;
@@ -444,6 +445,24 @@ function parseColor(s: Statement, v: string): void {
     return;
   }
 
+  // Single-channel grayscale gobetween: gobetween(0,255 in 5)
+  const grayGbMatch = v.match(
+    /gobetween\s*\(\s*(?<min>-?[\d.]+)\s*,\s*(?<max>-?[\d.]+)\s+in\s+(?<dur>-?[\d.]+(?:to-?[\d.]+)?)\s*\)/,
+  );
+  if (grayGbMatch) {
+    const min = parseFloat(grayGbMatch.groups!.min) / 255;
+    const max = parseFloat(grayGbMatch.groups!.max) / 255;
+    const dur = RangeOrValue.parse(grayGbMatch.groups!.dur);
+    for (const channel of ['Red', 'Green', 'Blue'] as const) {
+      const prop = `color${channel}Interpolation` as keyof Statement;
+      (s as any)[prop] = new InterpolationData(
+        RangeOrValue.single(min), RangeOrValue.single(max),
+        'linear', dur, 1, true, InterpolationType.GoBetween,
+      );
+    }
+    return;
+  }
+
   // Hex static: #F54927
   if (v.startsWith('#') && v.length === 7) {
     s.staticColor = v;
@@ -485,10 +504,8 @@ function parseColorChannel(s: Statement, channelName: string, value: string): vo
     return;
   }
 
-  let interp: InterpolationData | null = null;
-
   if (hasInterpolation(value)) {
-    interp = InterpolationData.parse(value);
+    let interp = InterpolationData.parse(value);
     if (interp) {
       // Normalize 0-255 to 0-1
       const minCheck = interp.minRange.isRange ? Math.max(interp.minRange.min, interp.minRange.max) : interp.minRange.min;
@@ -502,23 +519,24 @@ function parseColorChannel(s: Statement, channelName: string, value: string): vo
           : RangeOrValue.single(interp.maxRange.min / 255);
         interp = new InterpolationData(normalizedMin, normalizedMax, interp.easeName, interp.durationRange, interp.repeatCount, interp.isForever, interp.interpolationType);
       }
+      switch (channelName.toLowerCase()) {
+        case 'red': s.colorRedInterpolation = interp; break;
+        case 'green': s.colorGreenInterpolation = interp; break;
+        case 'blue': s.colorBlueInterpolation = interp; break;
+      }
     }
   } else {
-    const staticValue = parseFloat(value);
-    if (!isNaN(staticValue)) {
-      const normalized = staticValue > 1 ? staticValue / 255 : staticValue;
-      interp = new InterpolationData(
-        RangeOrValue.single(normalized), RangeOrValue.single(normalized),
-        'linear', RangeOrValue.single(0.01), 1, false, InterpolationType.Goto,
-      );
-    }
-  }
-
-  if (interp) {
+    // Plain value or range (e.g. "128" or "0to255")
+    // Store as a RangeOrValue so each voice can sample independently
+    const range = RangeOrValue.parse(value);
+    // Normalize 0-255 to 0-1
+    const normalizedRange = (range.max > 1 || range.min > 1)
+      ? (range.isRange ? RangeOrValue.range(range.min / 255, range.max / 255) : RangeOrValue.single(range.min / 255))
+      : range;
     switch (channelName.toLowerCase()) {
-      case 'red': s.colorRedInterpolation = interp; break;
-      case 'green': s.colorGreenInterpolation = interp; break;
-      case 'blue': s.colorBlueInterpolation = interp; break;
+      case 'red': s.colorRedRange = normalizedRange; break;
+      case 'green': s.colorGreenRange = normalizedRange; break;
+      case 'blue': s.colorBlueRange = normalizedRange; break;
     }
   }
 }
@@ -660,29 +678,23 @@ function flushGroup(dst: Statement[], g: GroupCtx): void {
       if (groupColorB && !s.colorBlueInterpolation) s.colorBlueInterpolation = groupColorB;
     }
 
+    // Volume and pitch multiply with group values (sample per statement for unique randoms)
     const gVol = gVolRange.sample();
     const gPitch = gPitchRange.sample();
 
     if (hasVol && !groupVolInterp) {
-      if (!s.volume.isNull) {
-        s.volume = RangeOrValue.single(s.volume.sample() * gVol);
-      } else {
-        s.volume = RangeOrValue.single(gVol);
-      }
+      s.volume = !s.volume.isNull ? s.volume.mul(gVol) : RangeOrValue.single(gVol);
     }
 
     if (hasPitch && !groupPitchInterp) {
-      if (!s.pitch.isNull) {
-        s.pitch = RangeOrValue.single(s.pitch.sample() * gPitch);
-      } else {
-        s.pitch = RangeOrValue.single(gPitch);
-      }
+      s.pitch = !s.pitch.isNull ? s.pitch.mul(gPitch) : RangeOrValue.single(gPitch);
     }
 
     // Apply other group properties as defaults
     for (const [key, val] of g.props) {
       switch (key) {
         case 'volume': case 'pitch': case 'color': break;
+        case 'starts_at': // Legacy alias
         case 'start': if (s.start.isNull) s.start = RangeOrValue.parse(val); break;
         case 'end': if (s.end.isNull) parseEnd(s, val); break;
         case 'duration': if (s.duration.isNull) s.duration = RangeOrValue.parse(val); break;

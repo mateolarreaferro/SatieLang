@@ -1,6 +1,9 @@
 /**
  * Sample-accurate event scheduler.
  * Ported from SatieScheduler.cs
+ *
+ * Uses a sorted timeline array for O(1) access to the next due event,
+ * instead of iterating the entire Map each frame.
  */
 import { SatieDSPClock } from './SatieDSPClock';
 
@@ -23,9 +26,9 @@ export interface SatieAudioEvent {
 }
 
 export class SatieScheduler {
-  private timeline: Map<number, SatieAudioEvent[]> = new Map();
+  /** Sorted by scheduledSample ascending. Earliest events at the front. */
+  private timeline: SatieAudioEvent[] = [];
   private clock: SatieDSPClock;
-  private lastProcessedSample: number = -1;
   private _totalScheduled: number = 0;
   private _totalProcessed: number = 0;
 
@@ -34,22 +37,24 @@ export class SatieScheduler {
   }
 
   get eventCount(): number {
-    let count = 0;
-    for (const events of this.timeline.values()) count += events.length;
-    return count;
+    return this.timeline.length;
   }
 
   get totalScheduled(): number { return this._totalScheduled; }
   get totalProcessed(): number { return this._totalProcessed; }
 
   schedule(evt: SatieAudioEvent): void {
-    const list = this.timeline.get(evt.scheduledSample);
-    if (list) {
-      list.push(evt);
-    } else {
-      this.timeline.set(evt.scheduledSample, [evt]);
-    }
     this._totalScheduled++;
+    // Binary search insert to maintain sorted order
+    const sample = evt.scheduledSample;
+    const arr = this.timeline;
+    let lo = 0, hi = arr.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (arr[mid].scheduledSample <= sample) lo = mid + 1;
+      else hi = mid;
+    }
+    arr.splice(lo, 0, evt);
   }
 
   scheduleAt(evt: SatieAudioEvent, timeSeconds: number): void {
@@ -63,41 +68,45 @@ export class SatieScheduler {
   }
 
   cancelTrackEvents(trackKey: string): void {
-    for (const [sample, events] of this.timeline) {
-      const filtered = events.filter(e => e.trackKey !== trackKey);
-      if (filtered.length === 0) this.timeline.delete(sample);
-      else this.timeline.set(sample, filtered);
+    // Filter in-place to avoid allocation
+    let write = 0;
+    for (let read = 0; read < this.timeline.length; read++) {
+      if (this.timeline[read].trackKey !== trackKey) {
+        this.timeline[write++] = this.timeline[read];
+      }
     }
+    this.timeline.length = write;
   }
 
   cancelAll(): void {
-    this.timeline.clear();
+    this.timeline.length = 0;
   }
 
   process(): void {
     const currentSample = this.clock.currentSample;
+    const arr = this.timeline;
 
-    for (const [sampleTime, events] of this.timeline) {
-      if (sampleTime > currentSample) continue;
-      if (sampleTime <= this.lastProcessedSample) continue;
-
-      for (const evt of events) {
-        try {
-          evt.onExecute?.();
-          this._totalProcessed++;
-        } catch (e) {
-          console.error(`[Scheduler] Error executing event:`, e);
-        }
+    // Since timeline is sorted, we just consume from the front
+    let consumed = 0;
+    while (consumed < arr.length && arr[consumed].scheduledSample <= currentSample) {
+      const evt = arr[consumed];
+      try {
+        evt.onExecute?.();
+        this._totalProcessed++;
+      } catch (e) {
+        console.error(`[Scheduler] Error executing event:`, e);
       }
-      this.timeline.delete(sampleTime);
+      consumed++;
     }
 
-    this.lastProcessedSample = currentSample;
+    // Remove consumed events efficiently
+    if (consumed > 0) {
+      arr.splice(0, consumed);
+    }
   }
 
   reset(): void {
-    this.timeline.clear();
-    this.lastProcessedSample = -1;
+    this.timeline.length = 0;
     this._totalScheduled = 0;
     this._totalProcessed = 0;
   }

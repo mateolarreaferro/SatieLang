@@ -75,7 +75,7 @@ export function TransportControls({
         step={0.01}
         defaultValue={1}
         onChange={(e) => onMasterVolume(parseFloat(e.target.value))}
-        style={{ width: 48, accentColor: '#1a3a2a', opacity: 0.35, marginLeft: 'auto' }}
+        style={{ width: 48, accentColor: '#000', opacity: 0.35, marginLeft: 'auto' }}
       />
     </div>
   );
