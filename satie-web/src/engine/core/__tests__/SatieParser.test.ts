@@ -570,6 +570,206 @@ describe('SatieParser', () => {
   });
 
   // ──────────────────────────────────────────────
+  // Universal `and` separator
+  // ──────────────────────────────────────────────
+  describe('and separator', () => {
+    it('expands `and volume` into separate property', () => {
+      const s = parseOne('oneshot x every 10to20 and pitch 2 and volume 0.5');
+      expect(s.every.min).toBe(10);
+      expect(s.every.max).toBe(20);
+      expect(s.pitch.min).toBe(2);
+      expect(s.volume.min).toBe(0.5);
+    });
+
+    it('does not split `and` when next word is not a keyword', () => {
+      const s = parseOne('loop rain\n  visual trail and sphere');
+      expect(s.visual).toContain('trail');
+      expect(s.visual).toContain('sphere');
+    });
+
+    it('works with DSP: loop rain and reverb wet 0.5 size 0.8', () => {
+      const s = parseOne('loop rain and reverb wet 0.5 size 0.8');
+      expect(s.reverbParams).not.toBeNull();
+      expect(s.reverbParams!.dryWet.min).toBe(0.5);
+      expect(s.reverbParams!.roomSize.min).toBe(0.8);
+    });
+
+    it('works with gen: loop gen singing bird and duration 15 and loopable', () => {
+      const s = parseOne('loop gen singing bird and duration 15 and loopable');
+      expect(s.isGenerated).toBe(true);
+      expect(s.genPrompt).toBe('singing bird');
+      expect(s.genDuration.min).toBe(15);
+      expect(s.genLoopable).toBe(true);
+    });
+
+    it('preserves `and` in gen prompt when next word is not a keyword', () => {
+      const s = parseOne('loop gen birds singing and flying');
+      expect(s.isGenerated).toBe(true);
+      expect(s.genPrompt).toBe('birds singing and flying');
+    });
+
+    it('splits `and influence` in gen statement', () => {
+      const s = parseOne('loop gen forest ambience and influence 0.5 and duration 8');
+      expect(s.isGenerated).toBe(true);
+      expect(s.genInfluence.min).toBe(0.5);
+      expect(s.genDuration.min).toBe(8);
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Gen blocks
+  // ──────────────────────────────────────────────
+  describe('gen blocks', () => {
+    it('parses a gen block and resolves reference', () => {
+      const stmts = parse(
+        'gen myBird\n' +
+        '    prompt singing bird in a forest\n' +
+        '    duration 15\n' +
+        '    influence 0.3\n' +
+        '    loopable\n' +
+        '\n' +
+        'loop myBird\n' +
+        '    volume 0.5\n',
+      );
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].isGenerated).toBe(true);
+      expect(stmts[0].genPrompt).toBe('singing bird in a forest');
+      expect(stmts[0].genDuration.min).toBe(15);
+      expect(stmts[0].genInfluence.min).toBe(0.3);
+      expect(stmts[0].genLoopable).toBe(true);
+      expect(stmts[0].volume.min).toBe(0.5);
+      expect(stmts[0].clip).toContain('generation/');
+    });
+
+    it('gen block with count expands into unique variants', () => {
+      const stmts = parse(
+        'gen myBird\n' +
+        '    prompt singing bird\n' +
+        '    duration 10\n' +
+        '\n' +
+        '5* loop myBird\n' +
+        '    volume 0.5\n',
+      );
+      expect(stmts.length).toBe(5);
+      for (let i = 0; i < 5; i++) {
+        expect(stmts[i].isGenerated).toBe(true);
+        expect(stmts[i].clip).toContain(`_${i + 1}`);
+        expect(stmts[i].genPrompt).toBe('singing bird');
+        expect(stmts[i].genDuration.min).toBe(10);
+      }
+    });
+
+    it('gen block with range params', () => {
+      const stmts = parse(
+        'gen ambient\n' +
+        '    prompt forest ambience\n' +
+        '    duration 10to20\n' +
+        '    influence 0.2to0.8\n' +
+        '\n' +
+        'loop ambient\n',
+      );
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].genDuration.isRange).toBe(true);
+      expect(stmts[0].genDuration.min).toBe(10);
+      expect(stmts[0].genDuration.max).toBe(20);
+      expect(stmts[0].genInfluence.isRange).toBe(true);
+      expect(stmts[0].genInfluence.min).toBe(0.2);
+      expect(stmts[0].genInfluence.max).toBe(0.8);
+    });
+
+    it('gen block missing prompt throws', () => {
+      expect(() => parse(
+        'gen broken\n' +
+        '    duration 10\n' +
+        '\n' +
+        'loop broken\n',
+      )).toThrow(/missing.*prompt/i);
+    });
+
+    it('gen block clamps duration to 0.5-22', () => {
+      const stmts = parse(
+        'gen test\n' +
+        '    prompt test sound\n' +
+        '    duration 50\n' +
+        '\n' +
+        'loop test\n',
+      );
+      expect(stmts[0].genDuration.min).toBe(22);
+    });
+
+    it('gen block clamps influence to 0-1', () => {
+      const stmts = parse(
+        'gen test\n' +
+        '    prompt test sound\n' +
+        '    influence 5\n' +
+        '\n' +
+        'loop test\n',
+      );
+      expect(stmts[0].genInfluence.min).toBe(1);
+    });
+
+    it('duplicate gen name: last wins', () => {
+      const stmts = parse(
+        'gen mySound\n' +
+        '    prompt first prompt\n' +
+        '\n' +
+        'gen mySound\n' +
+        '    prompt second prompt\n' +
+        '\n' +
+        'loop mySound\n',
+      );
+      expect(stmts[0].genPrompt).toBe('second prompt');
+    });
+
+    it('gen reference without count keeps single statement', () => {
+      const stmts = parse(
+        'gen wind\n' +
+        '    prompt gentle wind\n' +
+        '\n' +
+        'loop wind\n' +
+        '    move fly\n',
+      );
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].wanderType).toBe(WanderType.Fly);
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Inline gen with properties
+  // ──────────────────────────────────────────────
+  describe('inline gen with properties', () => {
+    it('parses inline gen with indented gen properties', () => {
+      const s = parseOne(
+        'loop gen singing bird\n' +
+        '    duration 15\n' +
+        '    influence 0.5\n' +
+        '    loopable\n',
+      );
+      expect(s.isGenerated).toBe(true);
+      expect(s.genPrompt).toBe('singing bird');
+      expect(s.genDuration.min).toBe(15);
+      expect(s.genInfluence.min).toBe(0.5);
+      expect(s.genLoopable).toBe(true);
+    });
+
+    it('inline gen duration is clamped', () => {
+      const s = parseOne(
+        'loop gen test sound\n' +
+        '    duration 100\n',
+      );
+      expect(s.genDuration.min).toBe(22);
+    });
+
+    it('inline gen influence is clamped', () => {
+      const s = parseOne(
+        'loop gen test sound\n' +
+        '    influence 5\n',
+      );
+      expect(s.genInfluence.min).toBe(1);
+    });
+  });
+
+  // ──────────────────────────────────────────────
   // Complex / realistic scripts
   // ──────────────────────────────────────────────
   describe('realistic scripts', () => {

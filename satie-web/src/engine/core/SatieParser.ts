@@ -6,6 +6,7 @@ import { RangeOrValue } from './RangeOrValue';
 import { InterpolationData, InterpolationType } from './InterpolationData';
 import {
   Statement,
+  GenDefinition,
   WanderType,
   ReverbParams,
   DelayParams,
@@ -133,7 +134,7 @@ function parseSingle(block: string): Statement {
   }
 
   const propsBlock = stripBlockComments(m.groups.block || '');
-  const STANDALONE_FLAGS = new Set(['overlap', 'persistent', 'mute', 'solo', 'randomstart', 'random_start']);
+  const STANDALONE_FLAGS = new Set(['overlap', 'persistent', 'mute', 'solo', 'randomstart', 'random_start', 'loopable']);
 
   let propMatch: RegExpExecArray | null;
   const propRx = /^[ \t]*(?<key>\w+)(?:[ \t]+(?<val>[^\r\n]+))?/gm;
@@ -179,6 +180,17 @@ function parseSingle(block: string): Statement {
       case 'filter': parseFilter(s, v); break;
       case 'distortion': parseDistortion(s, v); break;
       case 'eq': parseEQ(s, v); break;
+      case 'influence': {
+        const inf = RangeOrValue.parse(v);
+        if (!inf.isNull) {
+          const clampVal = (n: number) => Math.max(0, Math.min(1, n));
+          s.genInfluence = inf.isRange
+            ? RangeOrValue.range(clampVal(inf.min), clampVal(inf.max))
+            : RangeOrValue.single(clampVal(inf.min));
+        }
+        break;
+      }
+      case 'loopable': s.genLoopable = true; break;
     }
   }
   return s;
@@ -240,6 +252,49 @@ function parseMove(s: Statement, v: string): void {
       s.areaMax = { x: xmax, y: ymax, z: zmax };
       return;
     }
+  }
+
+  // Trajectory types — named movement patterns
+  const trajectoryMatch = v.match(/^(spiral|orbit|lorenz)\b\s*/i);
+  if (trajectoryMatch) {
+    const trajName = trajectoryMatch[1].toLowerCase();
+    v = v.substring(trajectoryMatch[0].length);
+
+    // Extract speed if present
+    let trajSpeed = 1;
+    const trajSpeedMatch = v.match(/(?:at\s+)?speed\s+(.+?)(?=\s+(?:x|y|z)\s+|$)/i);
+    if (trajSpeedMatch) {
+      const speedValue = trajSpeedMatch[1].trim();
+      const speedInterp = InterpolationData.parse(speedValue);
+      if (speedInterp) {
+        s.moveSpeedInterpolation = speedInterp;
+        trajSpeed = speedInterp.minValue;
+      } else {
+        trajSpeed = parseFloat(speedValue) || 1;
+      }
+      v = v.substring(0, trajSpeedMatch.index!).trim() + v.substring(trajSpeedMatch.index! + trajSpeedMatch[0].length).trim();
+    }
+
+    // Map to WanderType
+    switch (trajName) {
+      case 'spiral': s.wanderType = WanderType.Spiral; break;
+      case 'orbit': s.wanderType = WanderType.Orbit; break;
+      case 'lorenz': s.wanderType = WanderType.Lorenz; break;
+    }
+    s.wanderHz = RangeOrValue.single(trajSpeed);
+
+    // Parse optional axis bounds (default -5to5 for all axes)
+    let txMin = -5, txMax = 5, tyMin = -5, tyMax = 5, tzMin = -5, tzMax = 5;
+    const txMatch = v.match(/x\s+(-?[\d.]+)to(-?[\d.]+)/i);
+    if (txMatch) { txMin = parseFloat(txMatch[1]); txMax = parseFloat(txMatch[2]); }
+    const tyMatch = v.match(/y\s+(-?[\d.]+)to(-?[\d.]+)/i);
+    if (tyMatch) { tyMin = parseFloat(tyMatch[1]); tyMax = parseFloat(tyMatch[2]); }
+    const tzMatch = v.match(/z\s+(-?[\d.]+)to(-?[\d.]+)/i);
+    if (tzMatch) { tzMin = parseFloat(tzMatch[1]); tzMax = parseFloat(tzMatch[2]); }
+
+    s.areaMin = { x: txMin, y: tyMin, z: tzMin };
+    s.areaMax = { x: txMax, y: tyMax, z: tzMax };
+    return;
   }
 
   // New flexible syntax — detect and strip leading walk/fly keyword before axis parsing
@@ -713,12 +768,159 @@ function flushGroup(dst: Statement[], g: GroupCtx): void {
   }
 }
 
+// ============ AND PRE-PASS ============
+
+/** Property keywords that trigger `and` splitting. */
+const PROPERTY_KEYWORDS = new Set([
+  'volume', 'pitch', 'duration', 'move', 'filter', 'reverb', 'delay',
+  'distortion', 'eq', 'color', 'visual', 'influence', 'loopable',
+  'randomstart', 'random_start', 'fadein', 'fade_in', 'fadeout', 'fade_out',
+  'overlap', 'persistent', 'mute', 'solo', 'start', 'end', 'every', 'alpha',
+  'prompt',
+]);
+
+/**
+ * Pre-pass: expand ` and <keyword>` into indented newlines.
+ * `and` is only treated as a separator when followed by a property keyword.
+ * e.g. `visual trail and sphere` keeps `and` as literal since `sphere` is not a keyword.
+ */
+function expandAndSeparators(lines: string[]): string[] {
+  const result: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const indent = line.substring(0, line.length - trimmed.length);
+
+    // Only expand on statement lines or indented property lines
+    // Split on ` and ` where the next word is a property keyword
+    const parts: string[] = [];
+    let remaining = trimmed;
+    while (remaining.length > 0) {
+      const match = remaining.match(/^(.+?)\s+and\s+(\w+)/i);
+      if (match) {
+        const nextWord = match[2].toLowerCase();
+        if (PROPERTY_KEYWORDS.has(nextWord)) {
+          parts.push(match[1]);
+          remaining = remaining.substring(match[0].length - match[2].length);
+          continue;
+        }
+      }
+      parts.push(remaining);
+      break;
+    }
+
+    if (parts.length === 1) {
+      result.push(line);
+    } else {
+      // First part keeps original indent, subsequent parts get extra indent
+      result.push(indent + parts[0]);
+      const propIndent = indent + (indent.length > 0 ? '  ' : '    ');
+      for (let i = 1; i < parts.length; i++) {
+        result.push(propIndent + parts[i]);
+      }
+    }
+  }
+  return result;
+}
+
+// ============ GEN BLOCK EXTRACTION ============
+
+const GenBlockRx = /^gen\s+(\w+)\s*(?:#.*)?$/i;
+
+/**
+ * Extract `gen <name>` blocks from the script lines.
+ * Returns the gen definitions map and the remaining lines with gen blocks removed.
+ */
+function extractGenBlocks(lines: string[]): { genDefs: Map<string, GenDefinition>; remaining: string[] } {
+  const genDefs = new Map<string, GenDefinition>();
+  const remaining: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const trimmed = lines[i].trimStart();
+    const m = trimmed.match(GenBlockRx);
+
+    if (m) {
+      const name = m[1];
+      const blockIndent = countIndent(lines[i]);
+      i++;
+
+      // Consume indented lines
+      let prompt = '';
+      let duration = RangeOrValue.Null;
+      let influence = RangeOrValue.Null;
+      let loopable = false;
+
+      while (i < lines.length) {
+        const lineIndent = countIndent(lines[i]);
+        const lineTrimmed = lines[i].trimStart();
+        if (!lineTrimmed || lineTrimmed.startsWith('#')) { i++; continue; }
+        if (lineIndent <= blockIndent) break;
+
+        const propMatch = lineTrimmed.match(/^(\w+)(?:\s+(.+))?$/);
+        if (propMatch) {
+          const key = propMatch[1].toLowerCase();
+          const val = propMatch[2]?.trim() ?? '';
+          switch (key) {
+            case 'prompt': prompt = val; break;
+            case 'duration': duration = RangeOrValue.parse(val); break;
+            case 'influence': influence = RangeOrValue.parse(val); break;
+            case 'loopable': loopable = true; break;
+            default:
+              console.warn(`[Satie] Unknown gen property '${key}' in gen block '${name}'`);
+          }
+        }
+        i++;
+      }
+
+      if (!prompt) {
+        throw new SatieSyntaxError(
+          `Gen block '${name}' is missing a 'prompt' property`,
+          'prompt', null, `gen ${name}`,
+        );
+      }
+
+      // Clamp duration
+      if (!duration.isNull) {
+        const clampVal = (v: number) => Math.max(0.5, Math.min(22, v));
+        duration = duration.isRange
+          ? RangeOrValue.range(clampVal(duration.min), clampVal(duration.max))
+          : RangeOrValue.single(clampVal(duration.min));
+      }
+
+      // Clamp influence
+      if (!influence.isNull) {
+        const clampVal = (v: number) => Math.max(0, Math.min(1, v));
+        influence = influence.isRange
+          ? RangeOrValue.range(clampVal(influence.min), clampVal(influence.max))
+          : RangeOrValue.single(clampVal(influence.min));
+      }
+
+      if (genDefs.has(name)) {
+        console.warn(`[Satie] Duplicate gen definition '${name}' — last one wins`);
+      }
+
+      genDefs.set(name, { name, prompt, duration, influence, loopable });
+    } else {
+      remaining.push(lines[i]);
+      i++;
+    }
+  }
+
+  return { genDefs, remaining };
+}
+
 // ============ MAIN PARSE FUNCTION ============
 
 export function parse(script: string): Statement[] {
-  const outList: Statement[] = [];
-  const lines = script.replace(/\r\n/g, '\n').split('\n');
+  const rawLines = script.replace(/\r\n/g, '\n').split('\n');
 
+  // Pre-pass 1: expand `and` separators
+  const expandedLines = expandAndSeparators(rawLines);
+
+  // Pre-pass 2: extract gen blocks
+  const { genDefs, remaining: lines } = extractGenBlocks(expandedLines);
+
+  const outList: Statement[] = [];
   let grp: GroupCtx | null = null;
   let inBlockComment = false;
 
@@ -733,6 +935,14 @@ export function parse(script: string): Statement[] {
 
     const indent = countIndent(raw);
     const body = trimmed;
+
+    // Reject gen blocks inside groups
+    if (grp !== null && GenBlockRx.test(body)) {
+      throw new SatieSyntaxError(
+        'Gen blocks are not allowed inside groups',
+        'gen', null, body,
+      );
+    }
 
     // Close group?
     if (grp !== null && indent === grp.indent &&
@@ -765,8 +975,10 @@ export function parse(script: string): Statement[] {
       const st = parseSingle(sb.join('\n') + '\n');
 
       if (isGen) {
+        // Inline gen statement
         st.isGenerated = true;
         st.genPrompt = genPrompt;
+        promoteGenDuration(st);
 
         if (st.count > 1) {
           const n = st.count;
@@ -777,9 +989,39 @@ export function parse(script: string): Statement[] {
             variant.clip = `${baseClip}_${v + 1}`;
             variant.isGenerated = true;
             variant.genPrompt = genPrompt;
+            promoteGenDuration(variant);
+            copyGenPropsFromStatement(st, variant);
             if (grp) grp.children.push(variant); else outList.push(variant);
           }
           continue;
+        }
+      } else {
+        // Check if clip name references a gen definition
+        const genDef = genDefs.get(st.clip);
+        if (genDef) {
+          st.isGenerated = true;
+          st.genPrompt = genDef.prompt;
+          st.genDuration = genDef.duration;
+          st.genInfluence = genDef.influence;
+          st.genLoopable = genDef.loopable;
+          const baseName = 'generation/' + sanitizeForClipName(genDef.prompt);
+          st.clip = baseName;
+
+          if (st.count > 1) {
+            const n = st.count;
+            for (let v = 0; v < n; v++) {
+              const variant = parseSingle(sb.join('\n') + '\n');
+              variant.count = 1;
+              variant.clip = `${baseName}_${v + 1}`;
+              variant.isGenerated = true;
+              variant.genPrompt = genDef.prompt;
+              variant.genDuration = genDef.duration;
+              variant.genInfluence = genDef.influence;
+              variant.genLoopable = genDef.loopable;
+              if (grp) grp.children.push(variant); else outList.push(variant);
+            }
+            continue;
+          }
         }
       }
 
@@ -810,6 +1052,31 @@ export function parse(script: string): Statement[] {
 
   if (grp) flushGroup(outList, grp);
   return outList;
+}
+
+/** Copy gen-specific properties from a parsed statement to a variant. */
+function copyGenPropsFromStatement(src: Statement, dst: Statement): void {
+  dst.genDuration = src.genDuration;
+  dst.genInfluence = src.genInfluence;
+  dst.genLoopable = src.genLoopable;
+}
+
+/**
+ * For gen statements, if `duration` was set in the property block and `genDuration` is not,
+ * move it to `genDuration` (generation length, not playback length).
+ * Also clamp genDuration to 0.5–22s.
+ */
+function promoteGenDuration(s: Statement): void {
+  if (!s.duration.isNull && s.genDuration.isNull) {
+    s.genDuration = s.duration;
+    s.duration = RangeOrValue.Null;
+  }
+  if (!s.genDuration.isNull) {
+    const clampVal = (v: number) => Math.max(0.5, Math.min(22, v));
+    s.genDuration = s.genDuration.isRange
+      ? RangeOrValue.range(clampVal(s.genDuration.min), clampVal(s.genDuration.max))
+      : RangeOrValue.single(clampVal(s.genDuration.min));
+  }
 }
 
 export function tryParse(script: string): { success: boolean; statements: Statement[] | null; errors: string | null } {

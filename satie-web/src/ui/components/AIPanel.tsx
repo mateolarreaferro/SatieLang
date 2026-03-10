@@ -1,15 +1,22 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { tryParse } from '../../engine/core/SatieParser';
 
+export type AITarget = 'script' | 'sample';
+
 interface AIPanelProps {
   onGenerate: (code: string) => void;
+  onGenerateSample: (name: string, prompt: string) => void;
   currentScript?: string;
   loadedSamples?: string[];
+  target: AITarget;
+  onTargetChange: (target: AITarget) => void;
 }
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
+interface HistoryEntry {
+  prompt: string;
+  result: string;
+  timestamp: number;
+  target: AITarget;
 }
 
 // ── ASR: Microphone → Whisper transcription ────────────────
@@ -335,6 +342,30 @@ ${audioLibrary}
 Generate valid Satie code following these exact syntax rules.`;
 }
 
+// ── Sample generation system prompt ────────────────────────
+
+const SAMPLE_GEN_SYSTEM_PROMPT = `You are a sound designer. The user will describe a sound they want generated.
+
+Output ONLY a JSON object with two fields:
+- "name": a short, simple, lowercase name for the sample (1-2 words, no spaces, use underscore if needed). Examples: "bird", "rain", "thunder_rumble", "glass_tap"
+- "prompt": a detailed, descriptive prompt for audio generation that will produce the best possible result. Be specific about texture, character, and quality.
+
+STRICT RULES:
+- Output ONLY the JSON object, nothing else
+- No markdown, no explanation, no text before or after
+- Keep names simple and reusable (they'll be referenced in scripts)
+- Make prompts descriptive (3-15 words)
+
+Examples:
+User: "I need a bird sound"
+{"name":"bird","prompt":"gentle songbird chirping in a quiet forest morning"}
+
+User: "something like glass breaking"
+{"name":"glass_break","prompt":"glass shattering into small pieces on a hard floor"}
+
+User: "a warm pad"
+{"name":"warm_pad","prompt":"warm analog synthesizer pad with slow evolving harmonics"}`;
+
 // ── Enriched prompt (ported from Unity BuildEnrichedPrompt) ──
 
 function buildEnrichedPrompt(
@@ -378,13 +409,13 @@ function buildEnrichedPrompt(
   }
 
   if (currentScript && currentScript.trim() && currentScript.trim() !== '# satie') {
-    parts.push('CURRENT SCRIPT:');
+    parts.push('CURRENT SCRIPT (this is what is currently playing — KEEP ALL OF IT):');
     parts.push(currentScript);
     parts.push('');
     parts.push('USER REQUEST:');
     parts.push(userPrompt);
     parts.push('');
-    parts.push('Modify the current script according to the user request. Output only the complete modified script with correct syntax.');
+    parts.push('CRITICAL: Output the COMPLETE script with the requested modification ADDED to the existing code above. Do NOT remove or replace existing statements unless the user explicitly asks to. Preserve everything that is already there.');
   } else {
     parts.push('USER REQUEST:');
     parts.push(userPrompt);
@@ -431,11 +462,9 @@ async function verifyAndRepair(
     }
 
     if (attempt === maxAttempts) {
-      // Still return the code — it might partially work
       return { success: false, code: currentCode, error: result.errors };
     }
 
-    // Repair with Haiku
     try {
       const repaired = await callAnthropic(
         apiKey,
@@ -468,14 +497,10 @@ async function generateCode(
   loadedSamples: string[],
   conversationHistory: { role: string; content: string }[],
 ): Promise<{ code: string; error: string | null }> {
-  // Step 1: Library check (local, instant)
   const libraryResult = checkLibrary(userPrompt, loadedSamples);
-
-  // Step 2: Build prompts
   const systemPrompt = buildSystemPrompt(loadedSamples, libraryResult);
   const enrichedPrompt = buildEnrichedPrompt(userPrompt, currentScript, libraryResult);
 
-  // Step 3: Generate code with Sonnet
   const apiMessages = [
     ...conversationHistory,
     { role: 'user', content: enrichedPrompt },
@@ -490,10 +515,7 @@ async function generateCode(
     0.7,
   );
 
-  // Step 4: Clean response
   const cleanedCode = cleanGeneratedCode(rawResponse);
-
-  // Step 5: Verify & repair (uses parser + Haiku)
   const verified = await verifyAndRepair(apiKey, cleanedCode);
 
   return {
@@ -502,78 +524,155 @@ async function generateCode(
   };
 }
 
+// ── Sample generation pipeline ─────────────────────────────
+
+async function generateSampleSpec(
+  apiKey: string,
+  userPrompt: string,
+): Promise<{ name: string; prompt: string }> {
+  const rawResponse = await callAnthropic(
+    apiKey,
+    ORCHESTRATOR_MODEL,
+    SAMPLE_GEN_SYSTEM_PROMPT,
+    [{ role: 'user', content: userPrompt }],
+    256,
+    0.5,
+  );
+
+  // Parse JSON response
+  const cleaned = rawResponse.trim().replace(/^```json?\s*/i, '').replace(/```\s*$/, '').trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    return {
+      name: String(parsed.name ?? 'sample').toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+      prompt: String(parsed.prompt ?? userPrompt),
+    };
+  } catch {
+    // Fallback: use prompt as-is
+    const name = userPrompt.split(/\s+/).slice(0, 2).join('_').toLowerCase().replace(/[^a-z0-9_]/g, '');
+    return { name: name || 'sample', prompt: userPrompt };
+  }
+}
+
 // ── React component ────────────────────────────────────────
 
-export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPanelProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export function AIPanel({
+  onGenerate,
+  onGenerateSample,
+  currentScript,
+  loadedSamples = [],
+  target,
+  onTargetChange,
+}: AIPanelProps) {
+  const [prompts, setPrompts] = useState<string[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Generation history (Option A: linear stack)
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1); // -1 = current/new
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [prompts]);
+
+  const restoreHistory = useCallback((index: number) => {
+    if (index < 0 || index >= history.length) return;
+    const entry = history[index];
+    setHistoryIndex(index);
+    if (entry.target === 'script' && /\b(loop|oneshot)\b/.test(entry.result)) {
+      onGenerate(entry.result);
+    }
+  }, [history, onGenerate]);
 
   const sendPrompt = useCallback(async (prompt: string) => {
     if (!prompt.trim()) return;
 
-    const newMessages: Message[] = [...messages, { role: 'user', content: prompt }];
-    setMessages(newMessages);
+    setPrompts(prev => [...prev, prompt]);
     setInput('');
+    setStatus(null);
     setIsLoading(true);
 
     const apiKey = localStorage.getItem('satie-anthropic-key') ?? '';
     if (!apiKey) {
-      setMessages([...newMessages, {
-        role: 'assistant',
-        content: 'Set your Anthropic key in dashboard settings first.',
-      }]);
+      setStatus('Set your Anthropic key in dashboard settings first.');
       setIsLoading(false);
       return;
     }
 
     try {
-      const conversationHistory = newMessages.slice(0, -1).map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
+      if (target === 'sample') {
+        // Sample generation mode
+        const spec = await generateSampleSpec(apiKey, prompt);
+        setStatus(`generating "${spec.name}"...`);
 
-      const result = await generateCode(
-        apiKey,
-        prompt,
-        currentScript,
-        loadedSamples,
-        conversationHistory,
-      );
+        onGenerateSample(spec.name, spec.prompt);
 
-      setMessages([...newMessages, { role: 'assistant', content: result.code }]);
+        const entry: HistoryEntry = {
+          prompt,
+          result: `sample: ${spec.name} (${spec.prompt})`,
+          timestamp: Date.now(),
+          target: 'sample',
+        };
+        setHistory(prev => {
+          const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
+          return [...truncated, entry];
+        });
+        setHistoryIndex(-1);
+      } else {
+        // Script generation mode
+        // Always pass currentScript as the source of truth — no stale conversation history.
+        // Each request is self-contained: the enriched prompt includes the full current script.
+        const result = await generateCode(
+          apiKey,
+          prompt,
+          currentScript,
+          loadedSamples,
+          [],
+        );
 
-      if (/\b(loop|oneshot)\b/.test(result.code)) {
-        onGenerate(result.code);
+        if (/\b(loop|oneshot)\b/.test(result.code)) {
+          onGenerate(result.code);
+        }
+
+        if (result.error) {
+          setStatus(`warning: ${result.error}`);
+        }
+
+        const entry: HistoryEntry = {
+          prompt,
+          result: result.code,
+          timestamp: Date.now(),
+          target: 'script',
+        };
+        setHistory(prev => {
+          const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
+          return [...truncated, entry];
+        });
+        setHistoryIndex(-1);
       }
     } catch (e: any) {
-      setMessages([...newMessages, {
-        role: 'assistant',
-        content: `error: ${e.message}`,
-      }]);
+      setStatus(`error: ${e.message}`);
     } finally {
       setIsLoading(false);
     }
-  }, [messages, onGenerate, currentScript, loadedSamples]);
+  }, [prompts, onGenerate, onGenerateSample, currentScript, loadedSamples, target, history, historyIndex]);
 
   const send = useCallback(() => {
     sendPrompt(input.trim());
   }, [input, sendPrompt]);
 
-  // ASR: speech → text → auto-generate
+  // ASR
   const handleTranscription = useCallback((text: string) => {
     sendPrompt(text);
   }, [sendPrompt]);
 
   const handleASRError = useCallback((msg: string) => {
-    setMessages(prev => [...prev, { role: 'assistant', content: `mic: ${msg}` }]);
+    setStatus(`mic: ${msg}`);
   }, []);
 
   const asr = useASR(handleTranscription, handleASRError);
@@ -585,6 +684,20 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
     }
   }, [send]);
 
+  const targetBtnStyle = (active: boolean): React.CSSProperties => ({
+    padding: '2px 8px',
+    background: active ? '#1a1a1a' : 'none',
+    color: active ? '#fff' : '#1a1a1a',
+    border: '1px solid #1a1a1a',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontSize: '9px',
+    fontFamily: "'Inter', system-ui, sans-serif",
+    fontWeight: 500,
+    letterSpacing: '0.03em',
+    transition: 'all 0.15s',
+  });
+
   return (
     <div style={{
       display: 'flex',
@@ -592,6 +705,37 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
       height: '100%',
       fontFamily: "'Inter', system-ui, sans-serif",
     }}>
+      {/* Target selector */}
+      <div style={{
+        display: 'flex',
+        gap: '4px',
+        padding: '0 14px 6px',
+        alignItems: 'center',
+        flexShrink: 0,
+      }}>
+        <button
+          onClick={() => onTargetChange('script')}
+          style={targetBtnStyle(target === 'script')}
+        >
+          Script
+        </button>
+        <button
+          onClick={() => onTargetChange('sample')}
+          style={targetBtnStyle(target === 'sample')}
+        >
+          Sample
+        </button>
+        <span style={{
+          fontSize: '8px',
+          opacity: 0.2,
+          marginLeft: 'auto',
+          fontFamily: "'SF Mono', monospace",
+        }}>
+          {target === 'script' ? 'Score' : 'Samples'}
+        </span>
+      </div>
+
+      {/* Prompt log — only shows user prompts, no code output */}
       <div
         ref={scrollRef}
         style={{
@@ -601,32 +745,35 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
           fontSize: '12px',
         }}
       >
-        {messages.length === 0 && (
+        {prompts.length === 0 && !status && (
           <div style={{ opacity: 0.2, fontSize: '11px', padding: '4px 0' }}>
-            describe what you want to hear
+            {target === 'script'
+              ? 'describe what you want to hear'
+              : 'describe the sample you need'}
           </div>
         )}
-        {messages.map((m, i) => (
+        {prompts.map((p, i) => (
           <div key={i} style={{
-            padding: '4px 0',
+            padding: '3px 0',
             color: '#1a3a2a',
-            opacity: m.role === 'user' ? 0.4 : 0.85,
+            opacity: 0.4,
+            fontSize: '11px',
+            fontStyle: 'italic',
           }}>
-            {m.role === 'assistant' ? (
-              <pre style={{
-                fontFamily: "'SF Mono', 'Consolas', monospace",
-                fontSize: '11px',
-                whiteSpace: 'pre-wrap',
-                margin: 0,
-                lineHeight: 1.5,
-              }}>
-                {m.content}
-              </pre>
-            ) : (
-              <span style={{ fontStyle: 'italic', fontSize: '11px' }}>{m.content}</span>
-            )}
+            {p}
           </div>
         ))}
+        {status && (
+          <div style={{
+            padding: '3px 0',
+            color: status.startsWith('error') ? '#8b0000' : '#1a3a2a',
+            opacity: 0.5,
+            fontSize: '10px',
+            fontFamily: "'SF Mono', monospace",
+          }}>
+            {status}
+          </div>
+        )}
         {asr.recording && (
           <div style={{ opacity: 0.4, fontSize: '11px', padding: '4px 0', color: '#8b0000' }}>recording...</div>
         )}
@@ -638,12 +785,87 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
         )}
       </div>
 
+      {/* History navigation — shows prompt for the active entry */}
+      {history.length > 0 && (
+        <div style={{
+          borderTop: '1px solid #e8e0d8',
+          flexShrink: 0,
+          padding: '4px 14px 2px',
+        }}>
+          {historyIndex >= 0 && (
+            <div style={{
+              fontSize: '10px',
+              color: '#1a3a2a',
+              opacity: 0.5,
+              fontStyle: 'italic',
+              padding: '0 0 3px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
+              {history[historyIndex].prompt}
+            </div>
+          )}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+          }}>
+            <button
+              onClick={() => restoreHistory(historyIndex <= 0 ? 0 : (historyIndex < 0 ? history.length - 2 : historyIndex - 1))}
+              disabled={history.length <= 1 || historyIndex === 0}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: history.length <= 1 || historyIndex === 0 ? 'default' : 'pointer',
+                opacity: history.length <= 1 || historyIndex === 0 ? 0.15 : 0.5,
+                fontSize: '12px',
+                color: '#1a3a2a',
+                padding: '0 4px',
+              }}
+            >
+              &lt;
+            </button>
+            <span style={{
+              fontSize: '9px',
+              opacity: 0.3,
+              fontFamily: "'SF Mono', monospace",
+              minWidth: '32px',
+              textAlign: 'center',
+            }}>
+              {historyIndex < 0 ? history.length : historyIndex + 1}/{history.length}
+            </span>
+            <button
+              onClick={() => {
+                if (historyIndex >= 0 && historyIndex < history.length - 1) {
+                  restoreHistory(historyIndex + 1);
+                }
+              }}
+              disabled={historyIndex < 0 || historyIndex >= history.length - 1}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: (historyIndex < 0 || historyIndex >= history.length - 1) ? 'default' : 'pointer',
+                opacity: (historyIndex < 0 || historyIndex >= history.length - 1) ? 0.15 : 0.5,
+                fontSize: '12px',
+                color: '#1a3a2a',
+                padding: '0 4px',
+              }}
+            >
+              &gt;
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Input area */}
       <div style={{ padding: '6px 14px 10px', flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'flex-end' }}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="make a rainstorm..."
+          placeholder={target === 'script' ? 'make a rainstorm...' : 'a warm pad sound...'}
           rows={2}
           style={{
             flex: 1,

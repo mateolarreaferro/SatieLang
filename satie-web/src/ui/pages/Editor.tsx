@@ -4,7 +4,7 @@ import { useSatieEngine } from '../hooks/useSatieEngine';
 import { SatieEditor } from '../components/SatieEditor';
 import { SpatialViewport } from '../components/SpatialViewport';
 import { AudioLoader } from '../components/AudioLoader';
-import { AIPanel } from '../components/AIPanel';
+import { AIPanel, type AITarget } from '../components/AIPanel';
 import { Sidebar, type PanelVisibility } from '../components/Sidebar';
 import { Panel } from '../components/Panel';
 import { useAuth } from '../../lib/AuthContext';
@@ -12,6 +12,7 @@ import { getSketch, updateSketch, createSketch } from '../../lib/sketches';
 import { uploadSketchSamples, loadSketchSamples } from '../../lib/sampleStorage';
 import { cacheSample } from '../../lib/sampleCache';
 import { useSFX } from '../hooks/useSFX';
+import { generateAudio } from '../../engine/audio/AudioGen';
 import type { Statement } from '../../engine/core/Statement';
 import { WanderType } from '../../engine/core/Statement';
 
@@ -54,6 +55,66 @@ const VoicesPanel = memo(function VoicesPanel({ statements }: { statements: Stat
   );
 });
 
+/** SVG overlay that draws a bezier "patch cord" from AI panel to its target panel */
+const PatchCord = memo(function PatchCord({ target }: { target: AITarget }) {
+  const [path, setPath] = useState('');
+  const rafRef = useRef(0);
+
+  useEffect(() => {
+    const update = () => {
+      const aiEl = document.querySelector('[data-panel-id="ai"]') as HTMLElement | null;
+      const targetId = target === 'script' ? 'score' : 'samples';
+      const targetEl = document.querySelector(`[data-panel-id="${targetId}"]`) as HTMLElement | null;
+
+      if (aiEl && targetEl) {
+        // AI panel: left edge center
+        const aiRect = aiEl.getBoundingClientRect();
+        const tRect = targetEl.getBoundingClientRect();
+        // Get parent offset (the flex container)
+        const parent = aiEl.parentElement;
+        const pRect = parent?.getBoundingClientRect() ?? { left: 0, top: 0 };
+
+        const x1 = aiRect.left - pRect.left;
+        const y1 = aiRect.top - pRect.top + aiRect.height * 0.35;
+        const x2 = tRect.right - pRect.left;
+        const y2 = tRect.top - pRect.top + tRect.height * 0.5;
+
+        const dx = Math.abs(x2 - x1) * 0.5;
+        setPath(`M${x1},${y1} C${x1 - dx},${y1} ${x2 + dx},${y2} ${x2},${y2}`);
+      } else {
+        setPath('');
+      }
+      rafRef.current = requestAnimationFrame(update);
+    };
+    rafRef.current = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target]);
+
+  if (!path) return null;
+
+  return (
+    <svg
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+        zIndex: 0,
+      }}
+    >
+      <path
+        d={path}
+        fill="none"
+        stroke="#1a3a2a"
+        strokeWidth={1.5}
+        strokeDasharray="6 4"
+        opacity={0.35}
+      />
+    </svg>
+  );
+});
+
 export function Editor() {
   const { sketchId } = useParams<{ sketchId?: string }>();
   const { user } = useAuth();
@@ -81,6 +142,7 @@ export function Editor() {
     voices: true,
     ai: true,
   });
+  const [aiTarget, setAiTarget] = useState<AITarget>('script');
 
   const autosaveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   /** Raw ArrayBuffers for samples loaded this session — used for uploading on save. */
@@ -149,6 +211,49 @@ export function Editor() {
     loadScript(code);
     if (!uiState.isPlaying) play();
   }, [loadScript, uiState.isPlaying, play]);
+
+  const handleAISampleGenerate = useCallback(async (name: string, prompt: string) => {
+    try {
+      const ctx = new AudioContext();
+      const audioBuffer = await generateAudio(ctx, prompt, name, false);
+      // Convert AudioBuffer to ArrayBuffer (WAV) for storage
+      const channels = audioBuffer.numberOfChannels;
+      const length = audioBuffer.length;
+      const sampleRate = audioBuffer.sampleRate;
+      const bitsPerSample = 16;
+      const dataSize = length * channels * (bitsPerSample / 8);
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+      // WAV header
+      const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, channels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * channels * (bitsPerSample / 8), true);
+      view.setUint16(32, channels * (bitsPerSample / 8), true);
+      view.setUint16(34, bitsPerSample, true);
+      writeStr(36, 'data');
+      view.setUint32(40, dataSize, true);
+      let offset = 44;
+      for (let i = 0; i < length; i++) {
+        for (let ch = 0; ch < channels; ch++) {
+          const sample = Math.max(-1, Math.min(1, audioBuffer.getChannelData(ch)[i]));
+          view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+          offset += 2;
+        }
+      }
+      const clipName = `Audio/${name}`;
+      await handleLoadBuffer(clipName, buffer);
+      ctx.close();
+    } catch (e) {
+      console.error('[Editor] Sample generation failed:', e);
+    }
+  }, [handleLoadBuffer]);
 
   const handleSave = useCallback(async () => {
     if (!user) return;
@@ -312,18 +417,28 @@ export function Editor() {
         {panels.ai && (
           <Panel
             panelId="ai"
-            title="AI"
+            title="sAtIe"
             defaultX={768}
             defaultY={432}
             defaultWidth={320}
             defaultHeight={300}
             minWidth={240}
             minHeight={160}
-            borderColor="#2b2b8a"
+            borderColor="#1a3a2a"
           >
-            <AIPanel onGenerate={handleAIGenerate} currentScript={script} loadedSamples={loadedFiles} />
+            <AIPanel
+              onGenerate={handleAIGenerate}
+              onGenerateSample={handleAISampleGenerate}
+              currentScript={script}
+              loadedSamples={loadedFiles}
+              target={aiTarget}
+              onTargetChange={setAiTarget}
+            />
           </Panel>
         )}
+
+        {/* Patch cord SVG overlay */}
+        {panels.ai && <PatchCord target={aiTarget} />}
       </div>
     </div>
   );

@@ -10,12 +10,13 @@
  */
 import { SatieDSPClock } from './SatieDSPClock';
 import { SatieScheduler, AudioEventType, type SatieAudioEvent } from './SatieScheduler';
-import { Statement, WanderType, Vec3 } from './Statement';
+import { Statement, WanderType, Vec3, isTrajectoryWanderType } from './Statement';
+import { getTrajectory } from '../spatial/Trajectories';
 import { parse, pathFor } from './SatieParser';
 import { getEaseFunction, type EaseFunction } from './EaseFunctions';
 import { InterpolationData, InterpolationType } from './InterpolationData';
 import { buildDSPChain, destroyDSPChain, type DSPNodes } from '../dsp/DSPChain';
-import { generateAudio } from '../audio/AudioGen';
+import { generateAudio, type GenOptions } from '../audio/AudioGen';
 
 // Pre-computed hex lookup table (0-255 → "00"-"ff")
 const HEX_LUT: string[] = new Array(256);
@@ -60,6 +61,7 @@ export interface TrackState {
   _py1: number; _py2: number;
   _pz1: number; _pz2: number;
   _wanderSpeed: number; // precomputed wanderHz * 0.01 * 2π
+  _trajectoryPhase: number; // random phase offset for trajectory modes
 }
 
 export interface EngineState {
@@ -77,6 +79,8 @@ export interface EngineUIState {
   trackCount: number;
   statements: Statement[];
   errors: string | null;
+  mutedIndices: ReadonlySet<number>;
+  soloedIndices: ReadonlySet<number>;
 }
 
 type EngineListener = (state: EngineState) => void;
@@ -111,6 +115,10 @@ export class SatieEngine {
   private _isPlaying: boolean = false;
   private _lastUINotify: number = 0;
   private _lastSpatialUpdate: number = 0;
+
+  /** Runtime mixer state (independent of parsed mute/solo) */
+  private _mutedIndices: Set<number> = new Set();
+  private _soloedIndices: Set<number> = new Set();
 
   constructor() {
     this.ctx = new AudioContext();
@@ -165,6 +173,8 @@ export class SatieEngine {
       trackCount: this.tracks.size,
       statements: this.statements,
       errors: this.errors,
+      mutedIndices: this._mutedIndices,
+      soloedIndices: this._soloedIndices,
     };
     for (const listener of this.uiListeners) listener(uiState);
   }
@@ -220,6 +230,9 @@ export class SatieEngine {
     this.clock.start();
     this.scheduler.reset();
 
+    // Eager pre-generation: kick off all gen audio requests in parallel
+    this.preGenerateAll();
+
     this.scheduleAll();
     this.tick();
     this.notify();
@@ -239,6 +252,53 @@ export class SatieEngine {
 
   setMasterVolume(vol: number): void {
     this.masterGain.gain.setValueAtTime(vol, this.ctx.currentTime);
+  }
+
+  // ── Mixer: runtime mute/solo ──
+
+  toggleMute(statementIndex: number): void {
+    if (this._mutedIndices.has(statementIndex)) {
+      this._mutedIndices.delete(statementIndex);
+    } else {
+      this._mutedIndices.add(statementIndex);
+    }
+    this.applyMixerState();
+    this.notifyUI();
+  }
+
+  toggleSolo(statementIndex: number): void {
+    if (this._soloedIndices.has(statementIndex)) {
+      this._soloedIndices.delete(statementIndex);
+    } else {
+      this._soloedIndices.add(statementIndex);
+    }
+    this.applyMixerState();
+    this.notifyUI();
+  }
+
+  get mutedIndices(): ReadonlySet<number> { return this._mutedIndices; }
+  get soloedIndices(): ReadonlySet<number> { return this._soloedIndices; }
+
+  /** Recalculate which tracks are audible based on mute/solo state. */
+  private applyMixerState(): void {
+    const hasSolo = this._soloedIndices.size > 0;
+
+    for (const track of this.tracks.values()) {
+      // Extract statement index from track key: "clip_INDEX_count"
+      const parts = track.key.split('_');
+      const stmtIndex = parseInt(parts[parts.length - 2], 10);
+
+      let audible = true;
+      if (this._mutedIndices.has(stmtIndex)) {
+        audible = false;
+      } else if (hasSolo && !this._soloedIndices.has(stmtIndex)) {
+        audible = false;
+      }
+
+      // Set gain to 0 if inaudible, restore original volume if audible
+      const targetGain = audible ? track.volume : 0;
+      track.gainNode.gain.setTargetAtTime(targetGain, this.ctx.currentTime, 0.016);
+    }
   }
 
   // ── Internal: schedule all statements ──
@@ -384,6 +444,7 @@ export class SatieEngine {
       _pz1: seed * 1.3,
       _pz2: seed * 4.2,
       _wanderSpeed: wanderHz * 0.01 * 2 * Math.PI,
+      _trajectoryPhase: Math.random(),
     };
 
     // Pre-cache durations for all interpolations on this voice
@@ -508,14 +569,52 @@ export class SatieEngine {
 
   // ── Async audio generation for gen statements ──
 
+  /** Sample gen options from statement ranges. */
+  private sampleGenOptions(stmt: Statement): GenOptions {
+    const opts: GenOptions = {};
+    if (!stmt.genDuration.isNull) {
+      opts.duration = stmt.genDuration.sample();
+    } else if (stmt.genLoopable) {
+      opts.duration = 10; // loopable default
+    }
+    if (!stmt.genInfluence.isNull) {
+      opts.influence = stmt.genInfluence.sample();
+    }
+    return opts;
+  }
+
+  /** Eagerly pre-generate all gen audio on play(). Doesn't block playback. */
+  private preGenerateAll(): void {
+    for (let i = 0; i < this.statements.length; i++) {
+      const stmt = this.statements[i];
+      if (!stmt.isGenerated || !stmt.genPrompt) continue;
+
+      const clipPath = pathFor(stmt.clip);
+      // Skip if already loaded
+      if (this.audioBuffers.has(clipPath) || this.audioBuffers.has(stmt.clip)) continue;
+
+      const opts = this.sampleGenOptions(stmt);
+      console.log(`[SatieEngine] Pre-generating audio: "${stmt.genPrompt}" → ${clipPath}`);
+      generateAudio(this.ctx, stmt.genPrompt, clipPath, stmt.kind === 'loop', opts)
+        .then((audioBuffer) => {
+          this.audioBuffers.set(clipPath, audioBuffer);
+        })
+        .catch((e: any) => {
+          console.error(`[SatieEngine] Pre-generation failed: ${e.message}`);
+        });
+    }
+  }
+
   private async generateAndRetrigger(key: string, stmt: Statement, clipPath: string): Promise<void> {
     try {
+      const opts = this.sampleGenOptions(stmt);
       console.log(`[SatieEngine] Generating audio: "${stmt.genPrompt}" → ${clipPath}`);
       const audioBuffer = await generateAudio(
         this.ctx,
         stmt.genPrompt!,
         clipPath,
         stmt.kind === 'loop',
+        opts,
       );
       this.audioBuffers.set(clipPath, audioBuffer);
 
@@ -586,7 +685,11 @@ export class SatieEngine {
 
       // Spatial position — rate-limited
       if (doSpatial && stmt.wanderType !== WanderType.None) {
-        this.calculateWanderPositionInPlace(track, stmt, elapsed);
+        if (isTrajectoryWanderType(stmt.wanderType)) {
+          this.calculateTrajectoryPositionInPlace(track, stmt, elapsed);
+        } else {
+          this.calculateWanderPositionInPlace(track, stmt, elapsed);
+        }
         // Use AudioParam properties directly (non-deprecated, more efficient)
         track.pannerNode.positionX.value = track.position.x;
         track.pannerNode.positionY.value = track.position.y;
@@ -690,6 +793,20 @@ export class SatieEngine {
     track.position.x = minX + (stmt.areaMax.x - minX) * nx;
     track.position.y = stmt.wanderType === WanderType.Walk ? 0 : minY + (stmt.areaMax.y - minY) * ny;
     track.position.z = minZ + (stmt.areaMax.z - minZ) * nz;
+  }
+
+  private calculateTrajectoryPositionInPlace(track: TrackState, stmt: Statement, elapsed: number): void {
+    const trajectory = getTrajectory(stmt.wanderType);
+    if (!trajectory) return;
+
+    const speed = track.wanderHz; // wanderHz holds speed for trajectories
+    const t = (elapsed * speed + track._trajectoryPhase) % 1;
+    const pt = trajectory.evaluate(t);
+
+    const minX = stmt.areaMin.x, minY = stmt.areaMin.y, minZ = stmt.areaMin.z;
+    track.position.x = minX + (stmt.areaMax.x - minX) * pt.x;
+    track.position.y = minY + (stmt.areaMax.y - minY) * pt.y;
+    track.position.z = minZ + (stmt.areaMax.z - minZ) * pt.z;
   }
 
   private sampleInitialColor(stmt: Statement): string {

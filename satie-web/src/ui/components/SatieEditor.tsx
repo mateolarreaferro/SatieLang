@@ -26,7 +26,7 @@ function registerSatieLanguage(monaco: any) {
         [/\b(every)\b/, 'keyword.every'],
         [/\b(goto|gobetween|interpolate)\s*\(/, 'function'],
         [/\b(walk|fly|fixed)\b/, 'type.move'],
-        [/\b(volume|pitch|start|end|duration|fade_in|fade_out|move|color|alpha|visual|overlap|persistent|mute|solo|randomstart|random_start)\b/, 'variable'],
+        [/\b(volume|pitch|start|end|duration|fade_in|fade_out|move|color|alpha|visual|overlap|persistent|mute|solo|randomstart|random_start|prompt|influence|loopable)\b/, 'variable'],
         [/\b(reverb|delay|filter|distortion|eq)\b/, 'variable.dsp'],
         [/\b(wet|drywet|size|roomsize|damping|damp|time|feedback|pingpong|mode|cutoff|freq|resonance|drive|low|mid|high|speed)\b/, 'variable.param'],
         [/\b(lowpass|highpass|bandpass|notch|peak|softclip|hardclip|tanh|cubic|asymmetric)\b/, 'type.mode'],

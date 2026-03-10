@@ -150,6 +150,7 @@ export function Panel({
     <div
       ref={panelRef}
       className="satie-panel"
+      data-panel-id={panelId}
       style={{
         position: 'absolute',
         left: pos.x,

@@ -5,11 +5,26 @@
 import { RangeOrValue } from './RangeOrValue';
 import { InterpolationData } from './InterpolationData';
 
+export interface GenDefinition {
+  name: string;
+  prompt: string;
+  duration: RangeOrValue;
+  influence: RangeOrValue;
+  loopable: boolean;
+}
+
 export enum WanderType {
   None = 'none',
   Walk = 'walk',
   Fly = 'fly',
   Fixed = 'fixed',
+  Spiral = 'spiral',
+  Orbit = 'orbit',
+  Lorenz = 'lorenz',
+}
+
+export function isTrajectoryWanderType(wt: WanderType): boolean {
+  return wt === WanderType.Spiral || wt === WanderType.Orbit || wt === WanderType.Lorenz;
 }
 
 export interface Vec3 {
@@ -81,6 +96,9 @@ export class Statement {
   solo: boolean = false;
   isGenerated: boolean = false;
   genPrompt: string | null = null;
+  genDuration: RangeOrValue = RangeOrValue.Null;
+  genInfluence: RangeOrValue = RangeOrValue.Null;
+  genLoopable: boolean = false;
   fadeIn: RangeOrValue = RangeOrValue.Null;
   fadeOut: RangeOrValue = RangeOrValue.Null;
   randomStart: boolean = false;
