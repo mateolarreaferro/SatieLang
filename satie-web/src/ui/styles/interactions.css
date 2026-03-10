@@ -1,0 +1,146 @@
+/* Global hover & interaction styles */
+
+/* Buttons — subtle lift on hover */
+button {
+  transition: opacity 0.15s, transform 0.15s, box-shadow 0.15s, border-color 0.15s !important;
+}
+
+button:hover {
+  opacity: 1 !important;
+}
+
+button:active {
+  transform: scale(0.96);
+}
+
+/* Sidebar icon buttons */
+.sidebar-btn:hover {
+  transform: scale(1.1);
+}
+
+.sidebar-btn:active {
+  transform: scale(0.95);
+}
+
+/* Dashboard sketch cards */
+.sketch-card {
+  transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
+}
+
+.sketch-card:hover {
+  border-color: #0a0a0a !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Panel windows — subtle glow on hover */
+.satie-panel {
+  transition: box-shadow 0.25s ease-out;
+}
+
+.satie-panel:hover {
+  box-shadow: 0 4px 28px rgba(0, 0, 0, 0.08);
+}
+
+/* Auth buttons on dashboard */
+.auth-btn {
+  transition: background 0.2s, color 0.2s, transform 0.15s !important;
+}
+
+.auth-btn:hover {
+  background: #0a0a0a !important;
+  color: #faf9f6 !important;
+}
+
+/* New sketch button */
+.new-btn {
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s !important;
+}
+
+.new-btn:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2) !important;
+  transform: translateY(-1px);
+}
+
+.new-btn:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Welcome "Open Editor" button */
+.welcome-btn {
+  transition: background 0.2s, transform 0.15s, box-shadow 0.2s !important;
+}
+
+.welcome-btn:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2) !important;
+  transform: translateY(-2px);
+}
+
+/* Link buttons */
+.link-btn:hover {
+  opacity: 0.8 !important;
+}
+
+/* Delete button */
+.delete-btn {
+  transition: opacity 0.15s, color 0.15s !important;
+}
+
+.delete-btn:hover {
+  opacity: 1 !important;
+  color: #cc0000 !important;
+}
+
+/* Panel title bar — indicate draggability */
+.panel-titlebar {
+  transition: background 0.15s;
+}
+
+.panel-titlebar:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+/* Run button in editor */
+.run-btn {
+  transition: background 0.15s, color 0.15s, transform 0.1s !important;
+}
+
+.run-btn:hover {
+  background: #1a3a2a !important;
+  color: #faf9f6 !important;
+}
+
+/* Inputs — focus glow */
+input:focus {
+  border-color: #0a0a0a !important;
+}
+
+/* Smooth page transitions */
+.page-enter {
+  animation: fadeSlideIn 0.3s ease-out;
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* User avatar pulse on hover */
+.avatar-btn {
+  transition: transform 0.15s, box-shadow 0.15s !important;
+}
+
+.avatar-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.15);
+}
+
+/* Volume slider */
+input[type="range"]:hover {
+  opacity: 0.6 !important;
+}

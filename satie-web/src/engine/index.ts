@@ -1,0 +1,11 @@
+export { SatieEngine } from './core/SatieEngine';
+export type { EngineState, TrackState } from './core/SatieEngine';
+export { parse, tryParse, pathFor, sanitizeForClipName, SatieSyntaxError } from './core/SatieParser';
+export { Statement, WanderType } from './core/Statement';
+export type { Vec3, ReverbParams, DelayParams, FilterParams, DistortionParams, EQParams } from './core/Statement';
+export { RangeOrValue } from './core/RangeOrValue';
+export { InterpolationData, InterpolationType } from './core/InterpolationData';
+export { getEaseFunction } from './core/EaseFunctions';
+export { SatieDSPClock } from './core/SatieDSPClock';
+export { SatieScheduler } from './core/SatieScheduler';
+export type { SatieAudioEvent } from './core/SatieScheduler';
