@@ -19,6 +19,7 @@ export async function loadSettings(userId: string | null): Promise<UserSettings>
   const local: UserSettings = {
     anthropic_key: localStorage.getItem(LS_ANTHROPIC) ?? '',
     elevenlabs_key: localStorage.getItem(LS_ELEVENLABS) ?? '',
+    openai_key: localStorage.getItem(LS_OPENAI) ?? '',
   };
 
   if (!userId) return local;
@@ -26,7 +27,7 @@ export async function loadSettings(userId: string | null): Promise<UserSettings>
   try {
     const { data, error } = await supabase
       .from('user_settings')
-      .select('anthropic_key, elevenlabs_key')
+      .select('anthropic_key, elevenlabs_key, openai_key')
       .eq('user_id', userId)
       .single();
 
@@ -37,9 +38,11 @@ export async function loadSettings(userId: string | null): Promise<UserSettings>
       const settings: UserSettings = {
         anthropic_key: data.anthropic_key ?? '',
         elevenlabs_key: data.elevenlabs_key ?? '',
+        openai_key: data.openai_key ?? '',
       };
       localStorage.setItem(LS_ANTHROPIC, settings.anthropic_key);
       localStorage.setItem(LS_ELEVENLABS, settings.elevenlabs_key);
+      localStorage.setItem(LS_OPENAI, settings.openai_key);
       return settings;
     }
 
@@ -61,7 +64,7 @@ export async function saveKey(
   value: string,
 ): Promise<void> {
   // Always save locally (cache + guest fallback)
-  const lsKey = field === 'anthropic_key' ? LS_ANTHROPIC : LS_ELEVENLABS;
+  const lsKey = field === 'anthropic_key' ? LS_ANTHROPIC : field === 'openai_key' ? LS_OPENAI : LS_ELEVENLABS;
   localStorage.setItem(lsKey, value);
 
   if (!userId) return;
@@ -85,6 +88,7 @@ export async function saveSettings(
 ): Promise<void> {
   localStorage.setItem(LS_ANTHROPIC, settings.anthropic_key);
   localStorage.setItem(LS_ELEVENLABS, settings.elevenlabs_key);
+  localStorage.setItem(LS_OPENAI, settings.openai_key);
 
   try {
     await supabase
@@ -94,6 +98,7 @@ export async function saveSettings(
           user_id: userId,
           anthropic_key: settings.anthropic_key,
           elevenlabs_key: settings.elevenlabs_key,
+          openai_key: settings.openai_key,
           updated_at: new Date().toISOString(),
         },
         { onConflict: 'user_id' },

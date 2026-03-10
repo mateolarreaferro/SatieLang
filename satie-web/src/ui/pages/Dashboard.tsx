@@ -10,6 +10,7 @@ import { useSFX } from '../hooks/useSFX';
 interface ApiKeys {
   anthropic_key: string;
   elevenlabs_key: string;
+  openai_key: string;
 }
 
 // Draggable sketch card
@@ -229,7 +230,7 @@ export function Dashboard() {
     return true;
   });
   const [showSettings, setShowSettings] = useState(false);
-  const [keys, setKeys] = useState<ApiKeys>({ anthropic_key: '', elevenlabs_key: '' });
+  const [keys, setKeys] = useState<ApiKeys>({ anthropic_key: '', elevenlabs_key: '', openai_key: '' });
 
   const handleSplashComplete = useCallback(() => {
     setShowSplash(false);
@@ -366,6 +367,16 @@ export function Dashboard() {
                   placeholder="sk-ant-..."
                   value={keys.anthropic_key}
                   onChange={(e) => handleSaveKey('anthropic_key', e.target.value)}
+                  style={styles.settingsInput}
+                />
+              </div>
+              <div style={styles.settingsSection}>
+                <div style={styles.settingsLabel}>OpenAI API Key</div>
+                <input
+                  type="password"
+                  placeholder="sk-..."
+                  value={keys.openai_key}
+                  onChange={(e) => handleSaveKey('openai_key', e.target.value)}
                   style={styles.settingsInput}
                 />
               </div>

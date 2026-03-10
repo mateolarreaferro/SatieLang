@@ -15,6 +15,7 @@ import { parse, pathFor } from './SatieParser';
 import { getEaseFunction, type EaseFunction } from './EaseFunctions';
 import { InterpolationData, InterpolationType } from './InterpolationData';
 import { buildDSPChain, destroyDSPChain, type DSPNodes } from '../dsp/DSPChain';
+import { generateAudio } from '../audio/AudioGen';
 
 // Pre-computed hex lookup table (0-255 → "00"-"ff")
 const HEX_LUT: string[] = new Array(256);
@@ -442,6 +443,11 @@ export class SatieEngine {
     const buffer = this.audioBuffers.get(clipPath) ?? this.audioBuffers.get(stmt.clip);
 
     if (!buffer) {
+      if (stmt.isGenerated && stmt.genPrompt) {
+        // Trigger async generation, then retry playback
+        this.generateAndRetrigger(key, stmt, clipPath);
+        return;
+      }
       console.warn(`[SatieEngine] Audio not loaded: ${stmt.clip} (tried: ${clipPath})`);
       return;
     }
@@ -497,6 +503,28 @@ export class SatieEngine {
         this.tracks.delete(key);
         this._tracksArrayDirty = true;
       };
+    }
+  }
+
+  // ── Async audio generation for gen statements ──
+
+  private async generateAndRetrigger(key: string, stmt: Statement, clipPath: string): Promise<void> {
+    try {
+      console.log(`[SatieEngine] Generating audio: "${stmt.genPrompt}" → ${clipPath}`);
+      const audioBuffer = await generateAudio(
+        this.ctx,
+        stmt.genPrompt!,
+        clipPath,
+        stmt.kind === 'loop',
+      );
+      this.audioBuffers.set(clipPath, audioBuffer);
+
+      // Retry playback if still playing
+      if (this._isPlaying && this.tracks.has(key)) {
+        this.retriggerAudio(key, stmt);
+      }
+    } catch (e: any) {
+      console.error(`[SatieEngine] Audio generation failed: ${e.message}`);
     }
   }
 

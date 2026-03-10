@@ -12,6 +12,82 @@ interface Message {
   content: string;
 }
 
+// ── ASR: Microphone → Whisper transcription ────────────────
+
+async function transcribeAudio(audioBlob: Blob): Promise<string> {
+  const apiKey = localStorage.getItem('satie-openai-key') ?? '';
+  if (!apiKey) throw new Error('Set your OpenAI key in dashboard settings first.');
+
+  const form = new FormData();
+  form.append('file', audioBlob, 'audio.webm');
+  form.append('model', 'whisper-1');
+  form.append('language', 'en');
+  form.append('response_format', 'json');
+
+  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+    body: form,
+  });
+
+  if (!res.ok) throw new Error(`Whisper API ${res.status}`);
+  const data = await res.json();
+  return data.text ?? '';
+}
+
+function useASR(onTranscription: (text: string) => void, onError: (msg: string) => void) {
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const startTime = useRef(0);
+
+  const start = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+      chunks.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const elapsed = Date.now() - startTime.current;
+        setRecording(false);
+        if (elapsed < 300) return;
+
+        const blob = new Blob(chunks.current, { type: 'audio/webm' });
+        setTranscribing(true);
+        try {
+          const text = await transcribeAudio(blob);
+          if (text.trim()) onTranscription(text.trim());
+        } catch (e: any) {
+          onError(e.message);
+        } finally {
+          setTranscribing(false);
+        }
+      };
+
+      mediaRecorder.current = recorder;
+      startTime.current = Date.now();
+      recorder.start();
+      setRecording(true);
+    } catch {
+      onError('Microphone access denied');
+    }
+  }, [onTranscription, onError]);
+
+  const stop = useCallback(() => {
+    if (mediaRecorder.current?.state === 'recording') {
+      mediaRecorder.current.stop();
+    }
+  }, []);
+
+  return { recording, transcribing, start, stop };
+}
+
 // ── Code cleaning ──────────────────────────────────────────
 
 function cleanGeneratedCode(raw: string): string {
@@ -440,9 +516,8 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
     }
   }, [messages]);
 
-  const send = useCallback(async () => {
-    const prompt = input.trim();
-    if (!prompt) return;
+  const sendPrompt = useCallback(async (prompt: string) => {
+    if (!prompt.trim()) return;
 
     const newMessages: Message[] = [...messages, { role: 'user', content: prompt }];
     setMessages(newMessages);
@@ -453,14 +528,13 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
     if (!apiKey) {
       setMessages([...newMessages, {
         role: 'assistant',
-        content: 'Set your Anthropic key in the sidebar first.',
+        content: 'Set your Anthropic key in dashboard settings first.',
       }]);
       setIsLoading(false);
       return;
     }
 
     try {
-      // Build conversation history for context (previous exchanges)
       const conversationHistory = newMessages.slice(0, -1).map(m => ({
         role: m.role,
         content: m.content,
@@ -476,7 +550,6 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
 
       setMessages([...newMessages, { role: 'assistant', content: result.code }]);
 
-      // Auto-run immediately
       if (/\b(loop|oneshot)\b/.test(result.code)) {
         onGenerate(result.code);
       }
@@ -488,7 +561,22 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
     } finally {
       setIsLoading(false);
     }
-  }, [input, messages, onGenerate, currentScript, loadedSamples]);
+  }, [messages, onGenerate, currentScript, loadedSamples]);
+
+  const send = useCallback(() => {
+    sendPrompt(input.trim());
+  }, [input, sendPrompt]);
+
+  // ASR: speech → text → auto-generate
+  const handleTranscription = useCallback((text: string) => {
+    sendPrompt(text);
+  }, [sendPrompt]);
+
+  const handleASRError = useCallback((msg: string) => {
+    setMessages(prev => [...prev, { role: 'assistant', content: `mic: ${msg}` }]);
+  }, []);
+
+  const asr = useASR(handleTranscription, handleASRError);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -539,12 +627,18 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
             )}
           </div>
         ))}
+        {asr.recording && (
+          <div style={{ opacity: 0.4, fontSize: '11px', padding: '4px 0', color: '#8b0000' }}>recording...</div>
+        )}
+        {asr.transcribing && (
+          <div style={{ opacity: 0.3, fontSize: '11px', padding: '4px 0' }}>transcribing...</div>
+        )}
         {isLoading && (
           <div style={{ opacity: 0.2, fontSize: '11px', padding: '4px 0' }}>...</div>
         )}
       </div>
 
-      <div style={{ padding: '6px 14px 10px', flexShrink: 0 }}>
+      <div style={{ padding: '6px 14px 10px', flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'flex-end' }}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -552,7 +646,7 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
           placeholder="make a rainstorm..."
           rows={2}
           style={{
-            width: '100%',
+            flex: 1,
             padding: '8px 10px',
             border: '1px solid #d0cdc4',
             borderRadius: 12,
@@ -565,6 +659,34 @@ export function AIPanel({ onGenerate, currentScript, loadedSamples = [] }: AIPan
             lineHeight: 1.4,
           }}
         />
+        {/* Push-to-talk mic button */}
+        <button
+          onMouseDown={asr.start}
+          onMouseUp={asr.stop}
+          onMouseLeave={asr.recording ? asr.stop : undefined}
+          title={asr.recording ? 'Release to transcribe' : asr.transcribing ? 'Transcribing...' : 'Hold to speak'}
+          disabled={isLoading || asr.transcribing}
+          style={{
+            width: 34,
+            height: 34,
+            background: asr.recording ? '#8b0000' : 'none',
+            border: `1.5px solid ${asr.recording ? '#8b0000' : '#d0cdc4'}`,
+            borderRadius: 10,
+            cursor: isLoading || asr.transcribing ? 'default' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+            opacity: isLoading || asr.transcribing ? 0.3 : asr.recording ? 1 : 0.5,
+            transition: 'all 0.15s',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke={asr.recording ? '#faf9f6' : '#1a3a2a'} strokeWidth="1.3">
+            <rect x="5" y="1" width="4" height="8" rx="2" strokeLinejoin="round"/>
+            <path d="M3 7 C3 9.2 4.8 11 7 11 C9.2 11 11 9.2 11 7" strokeLinecap="round"/>
+            <line x1="7" y1="11" x2="7" y2="13" strokeLinecap="round"/>
+          </svg>
+        </button>
       </div>
     </div>
   );
