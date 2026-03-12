@@ -213,7 +213,7 @@ function layoutPosition(index: number, total: number) {
   const col = index % cols;
   const row = Math.floor(index / cols);
   const baseX = 80 + col * 320;
-  const baseY = 40 + row * 220;
+  const baseY = 90 + row * 220;
   const jitterX = ((index * 37) % 40) - 20;
   const jitterY = ((index * 53) % 30) - 15;
   return { x: baseX + jitterX, y: baseY + jitterY };

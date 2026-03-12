@@ -15,7 +15,7 @@ import { getTrajectory } from '../spatial/Trajectories';
 import { parse, pathFor } from './SatieParser';
 import { getEaseFunction, type EaseFunction } from './EaseFunctions';
 import { InterpolationData, InterpolationType } from './InterpolationData';
-import { buildDSPChain, destroyDSPChain, type DSPNodes } from '../dsp/DSPChain';
+import { buildDSPChain, destroyDSPChain, makeDistortionCurve, type DSPNodes } from '../dsp/DSPChain';
 import { generateAudio, type GenOptions } from '../audio/AudioGen';
 
 // Pre-computed hex lookup table (0-255 → "00"-"ff")
@@ -131,6 +131,34 @@ export class SatieEngine {
   get audioContext(): AudioContext { return this.ctx; }
   get isPlaying(): boolean { return this._isPlaying; }
   get currentTime(): number { return this.clock.currentTime; }
+
+  /** Sync the AudioListener to the camera/observer position. */
+  setListenerPosition(x: number, y: number, z: number): void {
+    const l = this.ctx.listener;
+    if (l.positionX) {
+      l.positionX.value = x;
+      l.positionY.value = y;
+      l.positionZ.value = z;
+    } else {
+      // Fallback for older browsers
+      l.setPosition(x, y, z);
+    }
+  }
+
+  /** Sync the AudioListener orientation (forward + up vectors). */
+  setListenerOrientation(fx: number, fy: number, fz: number, ux: number, uy: number, uz: number): void {
+    const l = this.ctx.listener;
+    if (l.forwardX) {
+      l.forwardX.value = fx;
+      l.forwardY.value = fy;
+      l.forwardZ.value = fz;
+      l.upX.value = ux;
+      l.upY.value = uy;
+      l.upZ.value = uz;
+    } else {
+      l.setOrientation(fx, fy, fz, ux, uy, uz);
+    }
+  }
 
   /** Get the shared tracks array. Updated in-place — no allocation per frame. */
   getTracksArray(): TrackState[] {
@@ -257,21 +285,26 @@ export class SatieEngine {
   // ── Mixer: runtime mute/solo ──
 
   toggleMute(statementIndex: number): void {
-    if (this._mutedIndices.has(statementIndex)) {
-      this._mutedIndices.delete(statementIndex);
+    // Create new Set so React memo detects the reference change
+    const next = new Set(this._mutedIndices);
+    if (next.has(statementIndex)) {
+      next.delete(statementIndex);
     } else {
-      this._mutedIndices.add(statementIndex);
+      next.add(statementIndex);
     }
+    this._mutedIndices = next;
     this.applyMixerState();
     this.notifyUI();
   }
 
   toggleSolo(statementIndex: number): void {
-    if (this._soloedIndices.has(statementIndex)) {
-      this._soloedIndices.delete(statementIndex);
+    const next = new Set(this._soloedIndices);
+    if (next.has(statementIndex)) {
+      next.delete(statementIndex);
     } else {
-      this._soloedIndices.add(statementIndex);
+      next.add(statementIndex);
     }
+    this._soloedIndices = next;
     this.applyMixerState();
     this.notifyUI();
   }
@@ -367,8 +400,7 @@ export class SatieEngine {
     const gainNode = this.ctx.createGain();
 
     const pannerNode = this.ctx.createPanner();
-    // Use 'equalpower' — HRTF is 10-50x more expensive per voice
-    pannerNode.panningModel = 'HRTF';
+    pannerNode.panningModel = 'equalpower';
     pannerNode.distanceModel = 'inverse';
     pannerNode.refDistance = 1;
     pannerNode.maxDistance = 50;
@@ -449,6 +481,29 @@ export class SatieEngine {
     this.cacheInterpolation(track, stmt.colorGreenInterpolation);
     this.cacheInterpolation(track, stmt.colorBlueInterpolation);
     this.cacheInterpolation(track, stmt.colorAlphaInterpolation);
+    // DSP interpolations
+    if (stmt.filterParams) {
+      this.cacheInterpolation(track, stmt.filterParams.cutoffInterpolation);
+      this.cacheInterpolation(track, stmt.filterParams.resonanceInterpolation);
+      this.cacheInterpolation(track, stmt.filterParams.dryWetInterpolation);
+    }
+    if (stmt.distortionParams) {
+      this.cacheInterpolation(track, stmt.distortionParams.driveInterpolation);
+      this.cacheInterpolation(track, stmt.distortionParams.dryWetInterpolation);
+    }
+    if (stmt.delayParams) {
+      this.cacheInterpolation(track, stmt.delayParams.timeInterpolation);
+      this.cacheInterpolation(track, stmt.delayParams.feedbackInterpolation);
+      this.cacheInterpolation(track, stmt.delayParams.dryWetInterpolation);
+    }
+    if (stmt.reverbParams) {
+      this.cacheInterpolation(track, stmt.reverbParams.dryWetInterpolation);
+    }
+    if (stmt.eqParams) {
+      this.cacheInterpolation(track, stmt.eqParams.lowGainInterpolation);
+      this.cacheInterpolation(track, stmt.eqParams.midGainInterpolation);
+      this.cacheInterpolation(track, stmt.eqParams.highGainInterpolation);
+    }
 
     this.tracks.set(key, track);
     this._tracksArrayDirty = true;
@@ -585,6 +640,10 @@ export class SatieEngine {
 
   /** Eagerly pre-generate all gen audio on play(). Doesn't block playback. */
   private preGenerateAll(): void {
+    // Track prompts we've seen — when the same prompt appears multiple times
+    // (from count > 1), vary the prompt so ElevenLabs produces distinct sounds
+    const promptCounts = new Map<string, number>();
+
     for (let i = 0; i < this.statements.length; i++) {
       const stmt = this.statements[i];
       if (!stmt.isGenerated || !stmt.genPrompt) continue;
@@ -593,9 +652,21 @@ export class SatieEngine {
       // Skip if already loaded
       if (this.audioBuffers.has(clipPath) || this.audioBuffers.has(stmt.clip)) continue;
 
+      // Vary the prompt for duplicate gen requests so each variant sounds different
+      const basePrompt = stmt.genPrompt;
+      const count = (promptCounts.get(basePrompt) ?? 0) + 1;
+      promptCounts.set(basePrompt, count);
+
+      let effectivePrompt = basePrompt;
+      if (count > 1) {
+        // Add a variation suffix to produce a distinct sound
+        const variations = ['with subtle variation', 'slightly different texture', 'alternative take', 'another version', 'different character'];
+        effectivePrompt = `${basePrompt}, ${variations[(count - 2) % variations.length]}`;
+      }
+
       const opts = this.sampleGenOptions(stmt);
-      console.log(`[SatieEngine] Pre-generating audio: "${stmt.genPrompt}" → ${clipPath}`);
-      generateAudio(this.ctx, stmt.genPrompt, clipPath, stmt.kind === 'loop', opts)
+      console.log(`[SatieEngine] Pre-generating audio: "${effectivePrompt}" → ${clipPath}`);
+      generateAudio(this.ctx, effectivePrompt, clipPath, stmt.kind === 'loop', opts)
         .then((audioBuffer) => {
           this.audioBuffers.set(clipPath, audioBuffer);
         })
@@ -608,10 +679,22 @@ export class SatieEngine {
   private async generateAndRetrigger(key: string, stmt: Statement, clipPath: string): Promise<void> {
     try {
       const opts = this.sampleGenOptions(stmt);
-      console.log(`[SatieEngine] Generating audio: "${stmt.genPrompt}" → ${clipPath}`);
+
+      // Detect variant suffix (e.g., _2, _3) and vary the prompt
+      let effectivePrompt = stmt.genPrompt!;
+      const variantMatch = clipPath.match(/_(\d+)$/);
+      if (variantMatch) {
+        const variantIdx = parseInt(variantMatch[1]);
+        if (variantIdx > 1) {
+          const variations = ['with subtle variation', 'slightly different texture', 'alternative take', 'another version', 'different character'];
+          effectivePrompt = `${effectivePrompt}, ${variations[(variantIdx - 2) % variations.length]}`;
+        }
+      }
+
+      console.log(`[SatieEngine] Generating audio: "${effectivePrompt}" → ${clipPath}`);
       const audioBuffer = await generateAudio(
         this.ctx,
-        stmt.genPrompt!,
+        effectivePrompt,
         clipPath,
         stmt.kind === 'loop',
         opts,
@@ -715,6 +798,96 @@ export class SatieEngine {
       if (stmt.colorAlphaInterpolation) {
         track.alpha = clamp01(this.evalInterpCached(track, stmt.colorAlphaInterpolation, elapsed));
       }
+
+      // DSP parameter interpolation
+      if (track.dspChain) {
+        this.updateDSPInterpolations(track, stmt, elapsed, ctxTime, doSpatial);
+      }
+    }
+  }
+
+  // ── DSP interpolation (per-frame for AudioParams, rate-limited for expensive ops) ──
+
+  private updateDSPInterpolations(track: TrackState, stmt: Statement, elapsed: number, ctxTime: number, doSpatial: boolean): void {
+    const dsp = track.dspChain!;
+
+    // Filter
+    if (stmt.filterParams && dsp.filterRef) {
+      const fp = stmt.filterParams;
+      if (fp.cutoffInterpolation) {
+        dsp.filterRef.filter.frequency.setTargetAtTime(
+          this.evalInterpCached(track, fp.cutoffInterpolation, elapsed), ctxTime, 0.016);
+      }
+      if (fp.resonanceInterpolation) {
+        dsp.filterRef.filter.Q.setTargetAtTime(
+          this.evalInterpCached(track, fp.resonanceInterpolation, elapsed), ctxTime, 0.016);
+      }
+      if (fp.dryWetInterpolation) {
+        const w = clamp01(this.evalInterpCached(track, fp.dryWetInterpolation, elapsed));
+        dsp.filterRef.wet.gain.setTargetAtTime(w, ctxTime, 0.016);
+        dsp.filterRef.dry.gain.setTargetAtTime(1 - w, ctxTime, 0.016);
+      }
+    }
+
+    // Distortion — drive regenerates curve at spatial rate (30fps) to avoid excess cost
+    if (stmt.distortionParams && dsp.distortionRef) {
+      const dp = stmt.distortionParams;
+      if (dp.driveInterpolation && doSpatial) {
+        const drive = this.evalInterpCached(track, dp.driveInterpolation, elapsed);
+        dsp.distortionRef.shaper.curve = makeDistortionCurve(
+          dsp.distortionRef.mode, drive) as unknown as Float32Array<ArrayBuffer>;
+      }
+      if (dp.dryWetInterpolation) {
+        const w = clamp01(this.evalInterpCached(track, dp.dryWetInterpolation, elapsed));
+        dsp.distortionRef.wet.gain.setTargetAtTime(w, ctxTime, 0.016);
+        dsp.distortionRef.dry.gain.setTargetAtTime(1 - w, ctxTime, 0.016);
+      }
+    }
+
+    // Delay
+    if (stmt.delayParams && dsp.delayRef) {
+      const dlp = stmt.delayParams;
+      if (dlp.timeInterpolation) {
+        const t = this.evalInterpCached(track, dlp.timeInterpolation, elapsed);
+        for (const d of dsp.delayRef.delays) {
+          d.delayTime.setTargetAtTime(t, ctxTime, 0.016);
+        }
+      }
+      if (dlp.feedbackInterpolation) {
+        dsp.delayRef.fbGain.gain.setTargetAtTime(
+          this.evalInterpCached(track, dlp.feedbackInterpolation, elapsed), ctxTime, 0.016);
+      }
+      if (dlp.dryWetInterpolation) {
+        const w = clamp01(this.evalInterpCached(track, dlp.dryWetInterpolation, elapsed));
+        dsp.delayRef.wet.gain.setTargetAtTime(w, ctxTime, 0.016);
+        dsp.delayRef.dry.gain.setTargetAtTime(1 - w, ctxTime, 0.016);
+      }
+    }
+
+    // Reverb — only dryWet (roomSize/damping require IR regeneration, too expensive)
+    if (stmt.reverbParams && dsp.reverbRef) {
+      if (stmt.reverbParams.dryWetInterpolation) {
+        const w = clamp01(this.evalInterpCached(track, stmt.reverbParams.dryWetInterpolation, elapsed));
+        dsp.reverbRef.wet.gain.setTargetAtTime(w, ctxTime, 0.016);
+        dsp.reverbRef.dry.gain.setTargetAtTime(1 - w, ctxTime, 0.016);
+      }
+    }
+
+    // EQ
+    if (stmt.eqParams && dsp.eqRef) {
+      const eq = stmt.eqParams;
+      if (eq.lowGainInterpolation) {
+        dsp.eqRef.low.gain.setTargetAtTime(
+          this.evalInterpCached(track, eq.lowGainInterpolation, elapsed), ctxTime, 0.016);
+      }
+      if (eq.midGainInterpolation) {
+        dsp.eqRef.mid.gain.setTargetAtTime(
+          this.evalInterpCached(track, eq.midGainInterpolation, elapsed), ctxTime, 0.016);
+      }
+      if (eq.highGainInterpolation) {
+        dsp.eqRef.high.gain.setTargetAtTime(
+          this.evalInterpCached(track, eq.highGainInterpolation, elapsed), ctxTime, 0.016);
+      }
     }
   }
 
@@ -785,9 +958,18 @@ export class SatieEngine {
   private calculateWanderPositionInPlace(track: TrackState, stmt: Statement, elapsed: number): void {
     const t = elapsed * track._wanderSpeed;
 
-    const nx = (Math.sin(t + track._px1) + Math.sin(t * 1.3 + track._px2) + Math.sin(t * 0.7 + track._px1 * 0.3)) / 6 + 0.5;
-    const ny = (Math.sin(t * 0.8 + track._py1) + Math.sin(t * 1.1 + track._py2) + Math.sin(t * 0.6 + track._py1 * 0.4)) / 6 + 0.5;
-    const nz = (Math.sin(t * 1.2 + track._pz1) + Math.sin(t * 0.7 + track._pz2) + Math.sin(t * 0.9 + track._pz1 * 0.6)) / 6 + 0.5;
+    let nx = (Math.sin(t + track._px1) + Math.sin(t * 1.3 + track._px2) + Math.sin(t * 0.7 + track._px1 * 0.3)) / 6 + 0.5;
+    let ny = (Math.sin(t * 0.8 + track._py1) + Math.sin(t * 1.1 + track._py2) + Math.sin(t * 0.6 + track._py1 * 0.4)) / 6 + 0.5;
+    let nz = (Math.sin(t * 1.2 + track._pz1) + Math.sin(t * 0.7 + track._pz2) + Math.sin(t * 0.9 + track._pz1 * 0.6)) / 6 + 0.5;
+
+    // High-frequency noise perturbation — makes paths jittery/organic
+    if (stmt.noise > 0) {
+      const ht = elapsed * 3.7; // faster than the base wander
+      const n = stmt.noise * 0.15;
+      nx += (Math.sin(ht * 2.3 + track._px2 * 5) + Math.sin(ht * 3.1 + track._px1 * 7)) * n;
+      ny += (Math.sin(ht * 1.9 + track._py2 * 5) + Math.sin(ht * 2.7 + track._py1 * 7)) * n;
+      nz += (Math.sin(ht * 2.1 + track._pz2 * 5) + Math.sin(ht * 3.3 + track._pz1 * 7)) * n;
+    }
 
     const minX = stmt.areaMin.x, minY = stmt.areaMin.y, minZ = stmt.areaMin.z;
 
@@ -797,7 +979,8 @@ export class SatieEngine {
   }
 
   private calculateTrajectoryPositionInPlace(track: TrackState, stmt: Statement, elapsed: number): void {
-    const trajectory = getTrajectory(stmt.wanderType);
+    const trajectoryName = stmt.wanderType === WanderType.Custom ? stmt.customTrajectoryName : stmt.wanderType;
+    const trajectory = trajectoryName ? getTrajectory(trajectoryName) : undefined;
     if (!trajectory) return;
 
     const speed = track.wanderHz; // wanderHz holds speed for trajectories
@@ -805,9 +988,25 @@ export class SatieEngine {
     const pt = trajectory.evaluate(t);
 
     const minX = stmt.areaMin.x, minY = stmt.areaMin.y, minZ = stmt.areaMin.z;
-    track.position.x = minX + (stmt.areaMax.x - minX) * pt.x;
-    track.position.y = minY + (stmt.areaMax.y - minY) * pt.y;
-    track.position.z = minZ + (stmt.areaMax.z - minZ) * pt.z;
+    const rangeX = stmt.areaMax.x - minX;
+    const rangeY = stmt.areaMax.y - minY;
+    const rangeZ = stmt.areaMax.z - minZ;
+
+    if (stmt.noise > 0) {
+      // Per-voice sinusoidal noise — each instance diverges due to unique phase offsets
+      const n = stmt.noise * 0.5; // scale: noise 1.0 = ±50% perturbation
+      const nt = elapsed * 0.7;
+      const nx = (Math.sin(nt + track._px1) + Math.sin(nt * 1.7 + track._px2)) * n;
+      const ny = (Math.sin(nt * 0.9 + track._py1) + Math.sin(nt * 1.4 + track._py2)) * n;
+      const nz = (Math.sin(nt * 1.1 + track._pz1) + Math.sin(nt * 1.6 + track._pz2)) * n;
+      track.position.x = minX + rangeX * (pt.x + nx);
+      track.position.y = minY + rangeY * (pt.y + ny);
+      track.position.z = minZ + rangeZ * (pt.z + nz);
+    } else {
+      track.position.x = minX + rangeX * pt.x;
+      track.position.y = minY + rangeY * pt.y;
+      track.position.z = minZ + rangeZ * pt.z;
+    }
   }
 
   private sampleInitialColor(stmt: Statement): string {

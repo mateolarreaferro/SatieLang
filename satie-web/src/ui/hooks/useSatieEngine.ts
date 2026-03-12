@@ -79,6 +79,14 @@ export function useSatieEngine() {
     engineRef.current?.toggleSolo(index);
   }, []);
 
+  const setListenerPosition = useCallback((x: number, y: number, z: number) => {
+    engineRef.current?.setListenerPosition(x, y, z);
+  }, []);
+
+  const setListenerOrientation = useCallback((fx: number, fy: number, fz: number, ux: number, uy: number, uz: number) => {
+    engineRef.current?.setListenerOrientation(fx, fy, fz, ux, uy, uz);
+  }, []);
+
   return {
     engine: engineRef,
     uiState,
@@ -91,5 +99,7 @@ export function useSatieEngine() {
     setMasterVolume,
     toggleMute,
     toggleSolo,
+    setListenerPosition,
+    setListenerOrientation,
   };
 }

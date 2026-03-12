@@ -21,8 +21,12 @@ export interface DSPNodes {
   output: AudioNode;
   /** All created nodes — for cleanup */
   nodes: AudioNode[];
-  /** Update functions for interpolated DSP params */
-  update?: (elapsed: number) => void;
+  /** Exposed node references for runtime parameter interpolation */
+  filterRef?: { filter: BiquadFilterNode; wet: GainNode; dry: GainNode };
+  distortionRef?: { shaper: WaveShaperNode; wet: GainNode; dry: GainNode; mode: string };
+  delayRef?: { delays: DelayNode[]; fbGain: GainNode; wet: GainNode; dry: GainNode };
+  reverbRef?: { wet: GainNode; dry: GainNode };
+  eqRef?: { low: BiquadFilterNode; mid: BiquadFilterNode; high: BiquadFilterNode };
 }
 
 // ─── Filter ───────────────────────────────────────────
@@ -30,7 +34,7 @@ export interface DSPNodes {
 function createFilter(
   ctx: AudioContext,
   params: FilterParams,
-): { filter: BiquadFilterNode; dryWet: GainNode; dry: GainNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
+): { filter: BiquadFilterNode; wet: GainNode; dry: GainNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
   const input = ctx.createGain();
   const output = ctx.createGain();
   const dry = ctx.createGain();
@@ -60,12 +64,12 @@ function createFilter(
   filter.connect(wet);
   wet.connect(output);
 
-  return { filter, dryWet: wet, dry, input, output, nodes: [input, output, dry, wet, filter] };
+  return { filter, wet, dry, input, output, nodes: [input, output, dry, wet, filter] };
 }
 
 // ─── Distortion (WaveShaperNode) ──────────────────────
 
-function makeDistortionCurve(mode: string, drive: number, samples: number = 1024): Float32Array {
+export function makeDistortionCurve(mode: string, drive: number, samples: number = 1024): Float32Array {
   const curve = new Float32Array(samples);
   const deg = Math.PI / 180;
 
@@ -101,7 +105,7 @@ function makeDistortionCurve(mode: string, drive: number, samples: number = 1024
 function createDistortion(
   ctx: AudioContext,
   params: DistortionParams,
-): { shaper: WaveShaperNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
+): { shaper: WaveShaperNode; wet: GainNode; dry: GainNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
   const input = ctx.createGain();
   const output = ctx.createGain();
   const dry = ctx.createGain();
@@ -122,7 +126,7 @@ function createDistortion(
   shaper.connect(wet);
   wet.connect(output);
 
-  return { shaper, input, output, nodes: [input, output, dry, wet, shaper] };
+  return { shaper, wet, dry, input, output, nodes: [input, output, dry, wet, shaper] };
 }
 
 // ─── Delay ────────────────────────────────────────────
@@ -130,7 +134,7 @@ function createDistortion(
 function createDelay(
   ctx: AudioContext,
   params: DelayParams,
-): { input: GainNode; output: GainNode; nodes: AudioNode[] } {
+): { delays: DelayNode[]; fbGain: GainNode; wet: GainNode; dry: GainNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
   const input = ctx.createGain();
   const output = ctx.createGain();
   const dry = ctx.createGain();
@@ -168,7 +172,7 @@ function createDelay(
     merger.connect(wet);
     wet.connect(output);
 
-    return { input, output, nodes: [input, output, dry, wet, delayL, delayR, fbGain, merger] };
+    return { delays: [delayL, delayR], fbGain, wet, dry, input, output, nodes: [input, output, dry, wet, delayL, delayR, fbGain, merger] };
   } else {
     // Simple mono delay with feedback
     const delay = ctx.createDelay(5);
@@ -185,7 +189,7 @@ function createDelay(
     delay.connect(wet);
     wet.connect(output);
 
-    return { input, output, nodes: [input, output, dry, wet, delay, fbGain] };
+    return { delays: [delay], fbGain, wet, dry, input, output, nodes: [input, output, dry, wet, delay, fbGain] };
   }
 }
 
@@ -220,7 +224,7 @@ function generateImpulseResponse(
 function createReverb(
   ctx: AudioContext,
   params: ReverbParams,
-): { convolver: ConvolverNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
+): { convolver: ConvolverNode; wet: GainNode; dry: GainNode; input: GainNode; output: GainNode; nodes: AudioNode[] } {
   const input = ctx.createGain();
   const output = ctx.createGain();
   const dry = ctx.createGain();
@@ -241,7 +245,7 @@ function createReverb(
   convolver.connect(wet);
   wet.connect(output);
 
-  return { convolver, input, output, nodes: [input, output, dry, wet, convolver] };
+  return { convolver, wet, dry, input, output, nodes: [input, output, dry, wet, convolver] };
 }
 
 // ─── EQ (3-band: low shelf + mid peaking + high shelf) ──
@@ -293,11 +297,17 @@ export function buildDSPChain(
   // Collect active effects in processing order
   const effects: { input: AudioNode; output: AudioNode; nodes: AudioNode[] }[] = [];
 
-  if (opts.filter) effects.push(createFilter(ctx, opts.filter));
-  if (opts.distortion) effects.push(createDistortion(ctx, opts.distortion));
-  if (opts.delay) effects.push(createDelay(ctx, opts.delay));
-  if (opts.reverb) effects.push(createReverb(ctx, opts.reverb));
-  if (opts.eq) effects.push(createEQ(ctx, opts.eq));
+  const filterResult = opts.filter ? createFilter(ctx, opts.filter) : null;
+  const distortionResult = opts.distortion ? createDistortion(ctx, opts.distortion) : null;
+  const delayResult = opts.delay ? createDelay(ctx, opts.delay) : null;
+  const reverbResult = opts.reverb ? createReverb(ctx, opts.reverb) : null;
+  const eqResult = opts.eq ? createEQ(ctx, opts.eq) : null;
+
+  if (filterResult) effects.push(filterResult);
+  if (distortionResult) effects.push(distortionResult);
+  if (delayResult) effects.push(delayResult);
+  if (reverbResult) effects.push(reverbResult);
+  if (eqResult) effects.push(eqResult);
 
   if (effects.length === 0) return null;
 
@@ -308,11 +318,20 @@ export function buildDSPChain(
 
   const allNodes = effects.flatMap(e => e.nodes);
 
-  return {
+  const result: DSPNodes = {
     input: effects[0].input,
     output: effects[effects.length - 1].output,
     nodes: allNodes,
   };
+
+  // Attach refs for runtime interpolation
+  if (filterResult) result.filterRef = { filter: filterResult.filter, wet: filterResult.wet, dry: filterResult.dry };
+  if (distortionResult) result.distortionRef = { shaper: distortionResult.shaper, wet: distortionResult.wet, dry: distortionResult.dry, mode: opts.distortion!.mode };
+  if (delayResult) result.delayRef = { delays: delayResult.delays, fbGain: delayResult.fbGain, wet: delayResult.wet, dry: delayResult.dry };
+  if (reverbResult) result.reverbRef = { wet: reverbResult.wet, dry: reverbResult.dry };
+  if (eqResult) result.eqRef = { low: eqResult.low, mid: eqResult.mid, high: eqResult.high };
+
+  return result;
 }
 
 /**

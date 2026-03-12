@@ -1,11 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { tryParse } from '../../engine/core/SatieParser';
+import { generateTrajectoryFromPrompt } from '../../engine/spatial/TrajectoryGen';
 
-export type AITarget = 'script' | 'sample';
+export type AITarget = 'script' | 'sample' | 'trajectory';
 
 interface AIPanelProps {
   onGenerate: (code: string) => void;
   onGenerateSample: (name: string, prompt: string) => void;
+  onGenerateTrajectory?: (name: string, prompt: string) => void;
   currentScript?: string;
   loadedSamples?: string[];
   target: AITarget;
@@ -276,7 +278,7 @@ loop rain
 oneshot piano_note_1 every 2to4
     pitch 0.8to1.2
     move fly speed 1to3
-    visual trail and sphere
+    visual trail sphere
     color red gobetween(100and255 as incubic in 5) green 150to200 blue 100
     reverb wet 0.6 size 0.9
     randomstart
@@ -289,7 +291,19 @@ CRITICAL SYNTAX RULES (NO COLONS, NO QUOTES, NO EQUALS):
 - Ranges: 0.5to1.0 (NO SPACES around 'to')
 - Numbers: Use dots not commas (0.5 not 0,5)
 
-INTERPOLATION (goto & gobetween):
+VARIABLES:
+- Define reusable values at the top level (no indentation)
+- Syntax: let name value
+- Usage: reference the variable name in any property value
+- Examples:
+    let baseVol 0.5
+    let basePitch 0.9to1.1
+    loop rain
+        volume baseVol
+        pitch basePitch
+- Variable names cannot be reserved words (loop, oneshot, volume, etc.)
+
+INTERPOLATION (goto, gobetween, interpolate):
 - goto: Interpolates from start to target value once
   Examples: volume goto(0and0.2 in 5)
            pitch goto(0and1.5 in 10)
@@ -299,36 +313,107 @@ INTERPOLATION (goto & gobetween):
            filter mode lowpass cutoff gobetween(300and3000 in 15)
            color red gobetween(0and255 as incubic in 20)
            reverb wet gobetween(0.1and1 in 10)
-- Easing functions (optional): linear (default), inquad, incubic, inoutquad
-  Examples: pitch gobetween(1and2 as inquad in 10)
+- interpolate: Smooth interpolation with easing (does not repeat by default)
+  Examples: interpolate(0.8and1.2 as incubic in 10)
+           interpolate(0and1 as outsine in 5 for 2)
+- Repeat control: add "for N" to repeat N times, or "for ever" to repeat forever
+  Examples: gobetween(0and1 in 5 for 3)
+           interpolate(0and1 as incubic in 10 for ever)
+- Easing functions (optional, default linear):
+  Sine: insine, outsine, inoutsine
+  Quad: inquad, outquad, inoutquad
+  Cubic: incubic, outcubic, inoutcubic
+  Quart: inquart, outquart, inoutquart
+  Expo: inexpo, outexpo, inoutexpo
+  Circ: incirc, outcirc, inoutcirc
+  Back: inback, outback, inoutback
+  Elastic: inelastic, outelastic, inoutelastic
+  Bounce: inbounce, outbounce, inoutbounce
+  Oscillating: sine, sinereturn, cosinereturn, elasticreturn, bouncereturn
 
 MOVEMENT (critical for spatial depth):
-- move walk: Ground movement (X and Z axes)
+- move walk: Ground movement (X and Z axes, Y fixed at 0)
   Example: move walk
 - move fly: 3D movement (X, Y, Z axes)
   Example: move fly speed 1to3
 - move with ranges: Specify exact ranges per axis
-  Example: move x -10to10 y 0to15 z -10to5 speed 2to3
-  Example: move x 0to0 z 10to10
+  Example: move fly x -10to10 y 0to15 z -10to5 speed 2to3
+  Example: move walk x 0to0 z 10to10
+- Trajectories (predefined paths):
+  move spiral, move orbit, move lorenz
+  Example: move spiral speed 0.5 noise 0.2
+  Example: move orbit x -3to3 y 0to5 z -3to3
+- Custom trajectory by name: move mytrajectory
+- AI-generated trajectory (inline): move gen descriptive prompt
+  Example: move gen flying bird
+  Example: move gen bouncing ball speed 2 noise 0.3
 - Speed: move fly speed 0.5 | move walk speed 2to5
+  Speed can also use interpolation: move fly speed goto(1and3 in 10)
+- Noise: adds jitter to any movement path (0-1)
+  Example: move orbit noise 0.4
+
+TRAJECTORY GEN BLOCKS (define named AI-generated trajectories):
+- Syntax:
+    gen mytrajectory
+        prompt bird flying in spiraling pattern
+        duration 15
+        resolution 4096
+        smoothing 0.3
+        ground
+        variation 0.8
+- Properties: prompt (required), duration (cycle seconds, default 30),
+  resolution (LUT points, default 8192), smoothing (0-1, default 0),
+  seed (int, default 0=random), ground (flag, constrain to Y=0),
+  variation (speed variation 0-1, default 0.5)
+- A gen block is detected as a trajectory (not audio) if it contains:
+  smoothing, resolution, seed, ground, or variation
+- Usage: reference in move property: move mytrajectory
+
+GROUPS (property inheritance):
+- Syntax:
+    group
+        volume 0.5
+        color red
+        loop sound1
+            pitch 0.8
+        loop sound2
+            pitch 1.2
+    endgroup
+- Group properties apply to all children
+- Child properties override group defaults
+- volume and pitch MULTIPLY with group values
+- move and visual are NOT allowed on groups
+
+MULTI-CLIP SHORTHAND:
+- Use "and" to apply the same settings to multiple clips
+  Example: oneshot bird and rain and wind every 5
+      volume 0.5
+- This expands each clip into a separate statement with the same properties
 
 COLOR (for visual objects):
 - Basic colors: color red, color blue, color green, color yellow, color white
+- Hex: color #FF5733
 - RGB values: color red 255 green 0 blue 100
 - With ranges: color red 0to255 green 100 blue 50to200
 - With interpolation: color red gobetween(0and255 as incubic in 20) green 0to255 blue gobetween(0and155 in 15)
+- Alpha: alpha 0.5 OR color #FFFFFF alpha gobetween(0and1 in 5)
 
 VISUAL OBJECTS:
 - visual trail: Trail effect behind sound
 - visual sphere: Sphere object
-- Combine: visual trail and sphere
+- visual cube: Cube object
+- Combine: visual trail sphere
 
 AUDIO EFFECTS (only if requested):
 - Delay: delay wet 0.9 time 0.5to0.9 feedback 0.2to1
-- Reverb: reverb wet 0.8 size 0.9
-- Filter: filter mode lowpass cutoff 3000
-- Distortion: distortion mode tanh drive 2
+- Delay pingpong: delay wet 0.5 time 0.375 feedback 0.5 pingpong
+- Reverb: reverb wet 0.8 size 0.9 damping 0.5
+- Filter: filter mode lowpass cutoff 3000 resonance 1 wet 1
+  Modes: lowpass, highpass, bandpass, notch, peak
+- Distortion: distortion mode tanh drive 2 wet 1
+  Modes: softclip, hardclip, tanh, cubic, asymmetric
 - EQ: eq low 3 mid -2 high 1
+- All DSP parameters can use interpolation (goto, gobetween)
 
 AUDIO GENERATION (gen keyword):
 - When a sound is NOT available in the library, use the gen keyword
@@ -336,6 +421,27 @@ AUDIO GENERATION (gen keyword):
 - Examples: loop gen fire with crackles | oneshot gen thunder rumble every 5to15
 - The prompt should be descriptive (e.g. "gentle rain on leaves" not just "rain")
 - Use gen ONLY for sounds not available in the library - prefer existing samples
+- Gen blocks (named, reusable):
+    gen ethereal_pad
+        prompt ethereal ambient pad with sustained notes
+        duration 3
+        influence 0.8
+        loopable
+  Then use: loop ethereal_pad
+
+OTHER PROPERTIES:
+- start 5: Delay before first playback (seconds)
+- end 30: Stop playback at time (seconds)
+- end 30 fade 2: Stop with 2-second fade-out
+- fadein 1: Fade-in duration
+- fadeout 2: Fade-out duration
+- overlap: Allow voices to overlap
+- persistent: Keep playing across loops
+- randomstart: Start at random position in clip
+
+COMMENTS:
+- Inline: # this is a comment
+- Block: comment ... endcomment
 
 ${audioLibrary}
 
@@ -384,11 +490,19 @@ function buildEnrichedPrompt(
   parts.push('SYNTAX REFERENCE (use only if requested):');
   parts.push('- Basic: loop audio/file OR oneshot audio/file every 2to5');
   parts.push('- Generate: loop gen descriptive prompt OR oneshot gen descriptive prompt every 2to5');
-  parts.push('- Movement: move walk OR move fly OR move x -10to10 y 0to15 z -10to5 speed 2');
-  parts.push('- Interpolation: volume goto(0and0.2 in 5) OR pitch gobetween(1and2 in 10)');
-  parts.push('- Effects: delay/reverb/filter (only if user asks for effects)');
+  parts.push('- Variables: let myvar 0.5 (define at top level, reference by name)');
+  parts.push('- Movement: move walk OR move fly OR move fly x -10to10 y 0to15 z -10to5 speed 2');
+  parts.push('- Trajectories: move spiral OR move orbit OR move lorenz OR move gen flying bird');
+  parts.push('- Interpolation: goto(0and0.2 in 5) OR gobetween(1and2 in 10) OR interpolate(0and1 as incubic in 5)');
+  parts.push('- Easing: insine, outsine, inquad, incubic, inoutcubic, inexpo, inback, inelastic, inbounce, etc.');
+  parts.push('- Repeat: gobetween(0and1 in 5 for 3) OR interpolate(0and1 in 5 for ever)');
+  parts.push('- Effects: delay/reverb/filter/distortion/eq (only if user asks for effects)');
+  parts.push('- Groups: group ... endgroup (property inheritance, volume/pitch multiply)');
+  parts.push('- Multi-clip: oneshot bird and rain and wind every 5');
+  parts.push('- Trajectory gen blocks: gen mypath + prompt/duration/smoothing/ground/variation');
   parts.push('- Visuals: visual trail/sphere/cube (only if user asks for visuals)');
-  parts.push('- Color: color red/blue/etc (only if user asks for color)');
+  parts.push('- Color: color red/blue/#hex/rgb + alpha (only if user asks for color)');
+  parts.push('- Timing: start 5, end 30 fade 2, fadein 1, fadeout 2');
   parts.push('');
 
   if (libraryResult.availableSamples.length > 0) {
@@ -436,15 +550,24 @@ CRITICAL SYNTAX RULES (NO COLONS, NO QUOTES, NO EQUALS):
 - Statements: loop audio/file (NOT loop "audio/file": or loop = "audio/file")
 - Statements: oneshot audio/file every 2to5
 - Generate: loop gen descriptive prompt OR oneshot gen descriptive prompt every 2to5
+- Variables: let name value (top level only, no reserved words)
 - Properties: volume 0.5 (NOT volume = 0.5 or volume: 0.5)
 - Properties: pitch 0.8to1.2 (space-separated, NO equals sign)
-- Interpolation: volume goto(0and0.2 in 5) OR pitch gobetween(1and2 in 10)
-- Easing: gobetween(0and255 as incubic in 20)
-- Movement: move walk OR move fly speed 1to3 OR move x -10to10 y 0to15 z -10to5 speed 2
+- Interpolation: goto(0and0.2 in 5) OR gobetween(1and2 in 10) OR interpolate(0and1 as incubic in 5)
+- Repeat: gobetween(0and1 in 5 for 3) OR for ever
+- Easing: insine, outsine, inquad, incubic, inoutcubic, inexpo, inback, inelastic, inbounce, etc.
+- Movement: move walk OR move fly speed 1to3 OR move fly x -10to10 y 0to15 z -10to5 speed 2
+- Trajectories: move spiral OR move orbit OR move lorenz OR move gen flying bird
+- Trajectory gen blocks: gen name + prompt/duration/smoothing/ground/variation (indented)
+- Groups: group ... endgroup (volume/pitch multiply with parent)
+- Multi-clip: oneshot bird and rain every 5
 - Color: color red gobetween(0and255 as incubic in 20) green 0to255 blue 100
-- Effects: delay wet 0.9 time 0.5to0.9 feedback 0.2to1 | reverb wet 0.8 size 0.9 | filter mode lowpass cutoff 3000
-- Visual: visual trail OR visual sphere OR visual trail and cube
+- Alpha: alpha 0.5 OR color #FF0000 alpha gobetween(0and1 in 5)
+- Effects: delay wet 0.9 time 0.5 feedback 0.5 [pingpong] | reverb wet 0.8 size 0.9 damping 0.5 | filter mode lowpass cutoff 3000 resonance 1 | distortion mode tanh drive 2 | eq low 3 mid -2 high 1
+- Visual: visual trail OR visual sphere OR visual trail cube
 - Ranges: 0.5to1.0 (NO SPACES around 'to')
+- Timing: start 5, end 30 fade 2, fadein 1, fadeout 2
+- Comments: # inline comment OR comment ... endcomment block
 - NO explanations, NO markdown, NO text before/after code`;
 
 async function verifyAndRepair(
@@ -559,6 +682,7 @@ async function generateSampleSpec(
 export function AIPanel({
   onGenerate,
   onGenerateSample,
+  onGenerateTrajectory,
   currentScript,
   loadedSamples = [],
   target,
@@ -605,7 +729,27 @@ export function AIPanel({
     }
 
     try {
-      if (target === 'sample') {
+      if (target === 'trajectory') {
+        // Trajectory generation mode
+        const spec = await generateTrajectoryFromPrompt(apiKey, prompt);
+        setStatus(`generating trajectory "${spec.name}"...`);
+
+        if (onGenerateTrajectory) {
+          onGenerateTrajectory(spec.name, spec.code);
+        }
+
+        const entry: HistoryEntry = {
+          prompt,
+          result: `trajectory: ${spec.name}`,
+          timestamp: Date.now(),
+          target: 'trajectory',
+        };
+        setHistory(prev => {
+          const truncated = historyIndex >= 0 ? prev.slice(0, historyIndex + 1) : prev;
+          return [...truncated, entry];
+        });
+        setHistoryIndex(-1);
+      } else if (target === 'sample') {
         // Sample generation mode
         const spec = await generateSampleSpec(apiKey, prompt);
         setStatus(`generating "${spec.name}"...`);
@@ -725,13 +869,19 @@ export function AIPanel({
         >
           Sample
         </button>
+        <button
+          onClick={() => onTargetChange('trajectory')}
+          style={targetBtnStyle(target === 'trajectory')}
+        >
+          Trajectory
+        </button>
         <span style={{
           fontSize: '8px',
           opacity: 0.2,
           marginLeft: 'auto',
           fontFamily: "'SF Mono', monospace",
         }}>
-          {target === 'script' ? 'Score' : 'Samples'}
+          {target === 'script' ? 'Score' : target === 'sample' ? 'Samples' : 'Spatial'}
         </span>
       </div>
 
@@ -860,12 +1010,12 @@ export function AIPanel({
       )}
 
       {/* Input area */}
-      <div style={{ padding: '6px 14px 10px', flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'flex-end' }}>
+      <div style={{ padding: '6px 14px 10px', flexShrink: 0, display: 'flex', gap: '6px', alignItems: 'center' }}>
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={target === 'script' ? 'make a rainstorm...' : 'a warm pad sound...'}
+          placeholder={target === 'script' ? 'make a rainstorm...' : target === 'sample' ? 'a warm pad sound...' : 'a bird that stops on branches...'}
           rows={2}
           style={{
             flex: 1,

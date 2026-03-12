@@ -3,7 +3,8 @@ import { useParams } from 'react-router-dom';
 import { useSatieEngine } from '../hooks/useSatieEngine';
 import { SatieEditor } from '../components/SatieEditor';
 import { SpatialViewport } from '../components/SpatialViewport';
-import { AudioLoader } from '../components/AudioLoader';
+import { AssetPanel } from '../components/AssetPanel';
+import { type SampleEntry } from '../components/SamplesTab';
 import { AIPanel, type AITarget } from '../components/AIPanel';
 import { Sidebar, type PanelVisibility } from '../components/Sidebar';
 import { Panel } from '../components/Panel';
@@ -15,6 +16,9 @@ import { useSFX } from '../hooks/useSFX';
 import { generateAudio } from '../../engine/audio/AudioGen';
 import type { Statement } from '../../engine/core/Statement';
 import { WanderType } from '../../engine/core/Statement';
+import { registerTrajectoryFromLUT, getTrajectory } from '../../engine/spatial/Trajectories';
+import { cacheTrajectory } from '../../lib/trajectoryCache';
+import { generateTrajectoryFromPrompt, executeTrajectoryCode, postProcessTrajectory, type TrajectoryGenParams } from '../../engine/spatial/TrajectoryGen';
 
 const DEFAULT_SCRIPT = `# satie\n`;
 const AUTOSAVE_DELAY = 2000;
@@ -198,13 +202,16 @@ export function Editor() {
     setMasterVolume,
     toggleMute,
     toggleSolo,
+    setListenerPosition,
+    setListenerOrientation,
   } = useSatieEngine();
 
   const sfx = useSFX();
   const [script, setScript] = useState(DEFAULT_SCRIPT);
   const [sketchTitle, setSketchTitle] = useState('Untitled');
   const [currentSketchId, setCurrentSketchId] = useState<string | undefined>(sketchId);
-  const [loadedFiles, setLoadedFiles] = useState<string[]>([]);
+  const [sampleEntries, setSampleEntries] = useState<SampleEntry[]>([]);
+  const [generatingTrajectory, setGeneratingTrajectory] = useState<string | null>(null);
   const [spaceBgColor, setSpaceBgColor] = useState('#f4f3ee');
   const [panels, setPanels] = useState<PanelVisibility>({
     score: true,
@@ -235,7 +242,11 @@ export function Editor() {
             sampleBuffers.current.set(name, data);
           });
           if (loaded.length > 0) {
-            setLoadedFiles(prev => [...new Set([...prev, ...loaded])]);
+            setSampleEntries(prev => {
+              const existing = new Set(prev.map(s => s.name));
+              const newEntries = loaded.filter(n => !existing.has(n)).map(n => ({ name: n, category: 'imported' as const }));
+              return [...prev, ...newEntries];
+            });
           }
         } catch (e) {
           console.error('[Editor] Failed to load sketch samples:', e);
@@ -249,10 +260,10 @@ export function Editor() {
     if (!user || !currentSketchId) return;
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     autosaveTimer.current = setTimeout(() => {
-      updateSketch(currentSketchId, { script }).catch(console.error);
+      updateSketch(currentSketchId, { script, title: sketchTitle }).catch(console.error);
     }, AUTOSAVE_DELAY);
     return () => { if (autosaveTimer.current) clearTimeout(autosaveTimer.current); };
-  }, [script, user, currentSketchId]);
+  }, [script, sketchTitle, user, currentSketchId]);
 
   const togglePanel = useCallback((key: keyof PanelVisibility) => {
     setPanels(prev => ({ ...prev, [key]: !prev[key] }));
@@ -263,17 +274,23 @@ export function Editor() {
     if (!uiState.isPlaying) play();
   }, [script, loadScript, uiState.isPlaying, play]);
 
-  const handleLoadBuffer = useCallback(async (name: string, data: ArrayBuffer) => {
+  const handleLoadBuffer = useCallback(async (name: string, data: ArrayBuffer, category: SampleEntry['category'] = 'imported') => {
     await loadAudioBuffer(name, data);
     sampleBuffers.current.set(name, data);
     // Cache locally in IndexedDB for fast reload
     cacheSample(name, data).catch(() => {});
-    setLoadedFiles((prev) => [...new Set([...prev, name])]);
+    setSampleEntries(prev => {
+      if (prev.some(s => s.name === name)) return prev;
+      return [...prev, { name, category }];
+    });
   }, [loadAudioBuffer]);
 
   const handleLoadFile = useCallback(async (name: string, url: string) => {
     await loadAudioFile(name, url);
-    setLoadedFiles((prev) => [...new Set([...prev, name])]);
+    setSampleEntries(prev => {
+      if (prev.some(s => s.name === name)) return prev;
+      return [...prev, { name, category: 'imported' }];
+    });
   }, [loadAudioFile]);
 
   const handleAIGenerate = useCallback((code: string) => {
@@ -319,12 +336,79 @@ export function Editor() {
         }
       }
       const clipName = `Audio/${name}`;
-      await handleLoadBuffer(clipName, buffer);
+      await handleLoadBuffer(clipName, buffer, 'generated');
       ctx.close();
     } catch (e) {
       console.error('[Editor] Sample generation failed:', e);
     }
   }, [handleLoadBuffer]);
+
+  const handleRecordSave = useCallback(async (name: string, data: ArrayBuffer) => {
+    await handleLoadBuffer(name, data, 'recorded');
+  }, [handleLoadBuffer]);
+
+  const handleGenerateTrajectory = useCallback(async (name: string, code: string, params?: TrajectoryGenParams) => {
+    setGeneratingTrajectory(name);
+    try {
+      const resolution = params?.resolution ?? 8192;
+      const seed = params?.seed ?? 0;
+      let points = executeTrajectoryCode(code, resolution, seed);
+
+      // Post-process: smoothing and ground constraint
+      if (params?.smoothing || params?.ground) {
+        points = postProcessTrajectory(points, resolution, params.smoothing ?? 0, params.ground ?? false);
+      }
+
+      // Register in runtime
+      registerTrajectoryFromLUT(name, points, resolution);
+
+      // Persist to IndexedDB
+      await cacheTrajectory({
+        name,
+        points,
+        pointCount: resolution,
+        description: name.replace(/_/g, ' '),
+        source: 'generated',
+        createdAt: Date.now(),
+      });
+    } catch (e) {
+      console.error('[Editor] Trajectory generation failed:', e);
+    } finally {
+      setGeneratingTrajectory(null);
+    }
+  }, []);
+
+  const handleDeleteSample = useCallback((name: string) => {
+    setSampleEntries(prev => prev.filter(s => s.name !== name));
+    sampleBuffers.current.delete(name);
+  }, []);
+
+  // Auto-generate trajectories when script contains `move gen`
+  const generatedTrajRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const stmt of uiState.statements) {
+      if (stmt.isGenTrajectory && stmt.genTrajectoryPrompt && stmt.customTrajectoryName) {
+        const name = stmt.customTrajectoryName;
+        if (!generatedTrajRef.current.has(name) && !getTrajectory(name)) {
+          generatedTrajRef.current.add(name);
+          const apiKey = localStorage.getItem('satie-anthropic-key') ?? '';
+          if (apiKey) {
+            const genParams: TrajectoryGenParams = {
+              duration: stmt.genTrajectoryDuration,
+              resolution: stmt.genTrajectoryResolution,
+              smoothing: stmt.genTrajectorySmoothing,
+              seed: stmt.genTrajectorySeed,
+              ground: stmt.genTrajectoryGround,
+              variation: stmt.genTrajectoryVariation,
+            };
+            generateTrajectoryFromPrompt(apiKey, stmt.genTrajectoryPrompt, genParams)
+              .then(spec => handleGenerateTrajectory(name, spec.code, genParams))
+              .catch(e => console.error('[Editor] Auto trajectory gen failed:', e));
+          }
+        }
+      }
+    }
+  }, [uiState.statements, handleGenerateTrajectory]);
 
   const handleSave = useCallback(async () => {
     if (!user) return;
@@ -442,18 +526,20 @@ export function Editor() {
         {panels.samples && (
           <Panel
             panelId="samples"
-            title="Samples"
+            title="Assets"
             defaultX={16}
             defaultY={572}
             defaultWidth={480}
-            defaultHeight={180}
-            minWidth={200}
-            minHeight={100}
+            defaultHeight={260}
+            minWidth={240}
+            minHeight={160}
           >
-            <AudioLoader
-              loadedFiles={loadedFiles}
-              onLoadFile={handleLoadFile}
+            <AssetPanel
+              samples={sampleEntries}
               onLoadBuffer={handleLoadBuffer}
+              onDeleteSample={handleDeleteSample}
+              onGenerateTrajectory={handleGenerateTrajectory}
+              generatingTrajectory={generatingTrajectory}
             />
           </Panel>
         )}
@@ -469,7 +555,7 @@ export function Editor() {
             minWidth={280}
             minHeight={200}
           >
-            <SpatialViewport tracksRef={tracksRef} bgColor={spaceBgColor} onBgColorChange={setSpaceBgColor} />
+            <SpatialViewport tracksRef={tracksRef} bgColor={spaceBgColor} onBgColorChange={setSpaceBgColor} onListenerMove={setListenerPosition} onListenerRotate={setListenerOrientation} />
           </Panel>
         )}
 
@@ -509,8 +595,9 @@ export function Editor() {
             <AIPanel
               onGenerate={handleAIGenerate}
               onGenerateSample={handleAISampleGenerate}
+              onGenerateTrajectory={handleGenerateTrajectory}
               currentScript={script}
-              loadedSamples={loadedFiles}
+              loadedSamples={sampleEntries.map(s => s.name)}
               target={aiTarget}
               onTargetChange={setAiTarget}
             />

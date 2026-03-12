@@ -531,10 +531,12 @@ describe('SatieParser', () => {
       expect(result.errors).toBeNull();
     });
 
-    it('returns error for invalid script', () => {
-      const result = tryParse('loop rain\n  move invalid_syntax_here');
-      expect(result.success).toBe(false);
-      expect(result.errors).not.toBeNull();
+    it('accepts single-word move names as custom trajectory references', () => {
+      // Single words in move are now treated as custom trajectory names
+      const result = tryParse('loop rain\n  move mytrajectory');
+      expect(result.success).toBe(true);
+      expect(result.statements![0].wanderType).toBe('custom');
+      expect(result.statements![0].customTrajectoryName).toBe('mytrajectory');
     });
   });
 
@@ -766,6 +768,174 @@ describe('SatieParser', () => {
         '    influence 5\n',
       );
       expect(s.genInfluence.min).toBe(1);
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Multi-clip `and`
+  // ──────────────────────────────────────────────
+  describe('multi-clip and', () => {
+    it('expands plain clips: oneshot bird and rain and lizard every 5', () => {
+      const stmts = parse('oneshot bird and rain and lizard every 5\n    volume 0.5\n');
+      expect(stmts.length).toBe(3);
+      expect(stmts[0].clip).toBe('bird');
+      expect(stmts[1].clip).toBe('rain');
+      expect(stmts[2].clip).toBe('lizard');
+      // All share the same properties
+      expect(stmts[0].every.min).toBe(5);
+      expect(stmts[1].every.min).toBe(5);
+      expect(stmts[2].every.min).toBe(5);
+      expect(stmts[0].volume.min).toBe(0.5);
+      expect(stmts[1].volume.min).toBe(0.5);
+    });
+
+    it('expands gen clips: oneshot gen bird and gen rain every 5', () => {
+      const stmts = parse('oneshot gen bird and gen rain every 5\n');
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].isGenerated).toBe(true);
+      expect(stmts[0].genPrompt).toBe('bird');
+      expect(stmts[1].isGenerated).toBe(true);
+      expect(stmts[1].genPrompt).toBe('rain');
+    });
+
+    it('count prefix applies to each clip', () => {
+      const stmts = parse('3* loop bird and rain\n');
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].count).toBe(3);
+      expect(stmts[0].clip).toBe('bird');
+      expect(stmts[1].count).toBe(3);
+      expect(stmts[1].clip).toBe('rain');
+    });
+
+    it('does not split when segment is multi-word non-gen', () => {
+      // "singing bird" is multi-word and doesn't start with gen — not a valid segment
+      const stmts = parse('loop rain\n');
+      // This should just parse normally (no and involved)
+      expect(stmts.length).toBe(1);
+    });
+
+    it('multi-clip inside group', () => {
+      const stmts = parse(
+        'group nature\n' +
+        '    volume 0.5\n' +
+        '    loop bird and rain\n' +
+        'endgroup\n',
+      );
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].clip).toBe('bird');
+      expect(stmts[1].clip).toBe('rain');
+      // Group volume applied to both
+      expect(stmts[0].volume.min).toBe(0.5);
+      expect(stmts[1].volume.min).toBe(0.5);
+    });
+
+    it('multi-clip with property and separator combined', () => {
+      const stmts = parse('oneshot bird and rain every 5 and volume 0.3\n');
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].clip).toBe('bird');
+      expect(stmts[1].clip).toBe('rain');
+      expect(stmts[0].volume.min).toBe(0.3);
+      expect(stmts[1].volume.min).toBe(0.3);
+    });
+
+    it('mixed gen and plain clips', () => {
+      const stmts = parse('oneshot bird and gen rain every 5\n');
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].isGenerated).toBe(false);
+      expect(stmts[0].clip).toBe('bird');
+      expect(stmts[1].isGenerated).toBe(true);
+      expect(stmts[1].genPrompt).toBe('rain');
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Variables
+  // ──────────────────────────────────────────────
+  describe('variables', () => {
+    it('basic variable substitution in property value', () => {
+      const stmts = parse('myVol 0.5\nloop bird\n    volume myVol\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volume.min).toBe(0.5);
+    });
+
+    it('let syntax', () => {
+      const stmts = parse('let myVol 0.5\nloop bird\n    volume myVol\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volume.min).toBe(0.5);
+    });
+
+    it('range variable', () => {
+      const stmts = parse('myRange 0.2to0.8\nloop bird\n    volume myRange\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volume.isRange).toBe(true);
+      expect(stmts[0].volume.min).toBe(0.2);
+      expect(stmts[0].volume.max).toBe(0.8);
+    });
+
+    it('interpolation variable', () => {
+      const stmts = parse('myInterp goto(0and1 in 10)\nloop bird\n    volume myInterp\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volumeInterpolation).not.toBeNull();
+      expect(stmts[0].volumeInterpolation!.interpolationType).toBe(InterpolationType.Goto);
+    });
+
+    it('variable in every clause', () => {
+      const stmts = parse('myTiming 5to10\noneshot bird every myTiming\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].every.isRange).toBe(true);
+      expect(stmts[0].every.min).toBe(5);
+      expect(stmts[0].every.max).toBe(10);
+    });
+
+    it('variable not substituted in clip name position', () => {
+      const stmts = parse('myVar 999\nloop myVar\n');
+      expect(stmts.length).toBe(1);
+      // Clip name is protected — should stay as 'myVar', not become '999'
+      expect(stmts[0].clip).toBe('myVar');
+    });
+
+    it('reserved word is not treated as variable', () => {
+      // 'volume' is reserved, so this line is unrecognized, not a variable
+      const stmts = parse('loop bird\n    volume 0.5\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volume.min).toBe(0.5);
+    });
+
+    it('multiple variables', () => {
+      const stmts = parse(
+        'myVol 0.5\n' +
+        'myPitch 1.2\n' +
+        'loop bird\n' +
+        '    volume myVol\n' +
+        '    pitch myPitch\n',
+      );
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].volume.min).toBe(0.5);
+      expect(stmts[0].pitch.min).toBe(1.2);
+    });
+
+    it('variable used across multiple statements', () => {
+      const stmts = parse(
+        'myVol 0.3\n' +
+        'loop bird\n' +
+        '    volume myVol\n' +
+        'loop rain\n' +
+        '    volume myVol\n',
+      );
+      expect(stmts.length).toBe(2);
+      expect(stmts[0].volume.min).toBe(0.3);
+      expect(stmts[1].volume.min).toBe(0.3);
+    });
+
+    it('variable with comment on definition line', () => {
+      const stmts = parse('myVol 0.5 # quiet\nloop bird\n    volume myVol\n');
+      expect(stmts[0].volume.min).toBe(0.5);
+    });
+
+    it('variable definition lines are removed from output', () => {
+      const stmts = parse('myVol 0.5\nloop bird\n');
+      expect(stmts.length).toBe(1);
+      expect(stmts[0].clip).toBe('bird');
     });
   });
 

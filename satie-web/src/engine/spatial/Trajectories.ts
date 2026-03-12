@@ -168,6 +168,8 @@ const lorenz: Trajectory = new LUTTrajectory(LUT_SIZE, generateLorenzLUT);
 
 // ── Registry ──
 
+const BUILTIN_NAMES = new Set(['spiral', 'orbit', 'lorenz']);
+
 const TRAJECTORY_REGISTRY: Map<string, Trajectory> = new Map([
   ['spiral', spiral],
   ['orbit', orbit],
@@ -181,3 +183,37 @@ export function getTrajectory(name: string): Trajectory | undefined {
 export function isTrajectoryName(name: string): boolean {
   return TRAJECTORY_REGISTRY.has(name);
 }
+
+export function isBuiltinTrajectory(name: string): boolean {
+  return BUILTIN_NAMES.has(name);
+}
+
+/** Register a custom trajectory from a pre-computed LUT (interleaved xyz Float32Array). */
+export function registerTrajectoryFromLUT(name: string, points: Float32Array, pointCount: number): void {
+  // Deinterleave into separate xyz arrays for LUTTrajectory
+  const xs = new Float32Array(pointCount);
+  const ys = new Float32Array(pointCount);
+  const zs = new Float32Array(pointCount);
+  for (let i = 0; i < pointCount; i++) {
+    xs[i] = points[i * 3];
+    ys[i] = points[i * 3 + 1];
+    zs[i] = points[i * 3 + 2];
+  }
+  const traj = new LUTTrajectory(pointCount, () => ({ xs, ys, zs }));
+  // Force evaluation so the LUT is immediately available
+  traj.evaluate(0);
+  TRAJECTORY_REGISTRY.set(name, traj);
+}
+
+/** Remove a custom trajectory (cannot remove builtins). */
+export function unregisterTrajectory(name: string): boolean {
+  if (BUILTIN_NAMES.has(name)) return false;
+  return TRAJECTORY_REGISTRY.delete(name);
+}
+
+/** List all registered trajectory names. */
+export function listTrajectoryNames(): string[] {
+  return Array.from(TRAJECTORY_REGISTRY.keys());
+}
+
+export { LUTTrajectory };

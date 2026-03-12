@@ -16,7 +16,8 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
     const t2 = setTimeout(() => setPhase('fade'), 2400);
     const t3 = setTimeout(onComplete, 3200);
     return () => { clearTimeout(s0); clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [onComplete, sfx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onComplete]);
 
   const letters = 'SATIE'.split('');
 

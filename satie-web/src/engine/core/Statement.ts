@@ -13,6 +13,17 @@ export interface GenDefinition {
   loopable: boolean;
 }
 
+export interface TrajectoryGenDefinition {
+  name: string;
+  prompt: string;
+  duration: number;       // cycle length in seconds (default 30)
+  resolution: number;     // LUT point count (default 8192)
+  smoothing: number;      // 0-1 post-process smoothing factor (default 0)
+  seed: number;           // random seed for reproducibility (default 0 = random)
+  ground: boolean;        // constrain to Y=0 plane
+  variation: number;      // speed/velocity variation 0-1 (default 0.5)
+}
+
 export enum WanderType {
   None = 'none',
   Walk = 'walk',
@@ -21,10 +32,13 @@ export enum WanderType {
   Spiral = 'spiral',
   Orbit = 'orbit',
   Lorenz = 'lorenz',
+  Custom = 'custom',
 }
 
+const BUILTIN_TRAJECTORY_TYPES = new Set([WanderType.Spiral, WanderType.Orbit, WanderType.Lorenz]);
+
 export function isTrajectoryWanderType(wt: WanderType): boolean {
-  return wt === WanderType.Spiral || wt === WanderType.Orbit || wt === WanderType.Lorenz;
+  return BUILTIN_TRAJECTORY_TYPES.has(wt) || wt === WanderType.Custom;
 }
 
 export interface Vec3 {
@@ -108,6 +122,18 @@ export class Statement {
   areaMin: Vec3 = { x: 0, y: 0, z: 0 };
   areaMax: Vec3 = { x: 0, y: 0, z: 0 };
   wanderHz: RangeOrValue = RangeOrValue.single(0.3);
+
+  customTrajectoryName: string | null = null;  // for WanderType.Custom
+  isGenTrajectory: boolean = false;  // true if trajectory needs generation
+  genTrajectoryPrompt: string | null = null;  // description for trajectory gen
+  genTrajectoryDuration: number = 30;         // cycle length in seconds
+  genTrajectoryResolution: number = 8192;     // LUT point count
+  genTrajectorySmoothing: number = 0;         // post-process smoothing 0-1
+  genTrajectorySeed: number = 0;              // random seed (0 = random)
+  genTrajectoryGround: boolean = false;       // constrain to ground plane
+  genTrajectoryVariation: number = 0.5;       // speed variation 0-1
+
+  noise: number = 0;  // trajectory noise amplitude 0-1
 
   visual: string[] = [];
 
